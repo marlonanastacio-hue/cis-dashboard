@@ -1,0 +1,1230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIS Hardening Live Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root {
+    --navy: #1F4E78; --navy-dark: #003366; --grey: #595959; --light-grey: #F2F2F2;
+    --border: #D9D9D9; --green: #006100; --red: #C00000; --amber: #9C6500;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; background: #FAFAFA; color: #1F1F1F; margin: 0; padding: 1.5rem 1.5rem 4rem; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { color: var(--navy); font-size: 22px; margin: 0 0 2px; }
+  h2 { color: var(--navy); font-size: 15px; margin: 0 0 10px; }
+  p.sub { color: var(--grey); font-size: 12.5px; margin: 0 0 16px; }
+  .topbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  .topbar label { font-size: 13px; font-weight: bold; color: var(--navy); }
+  .topbar select { font-family: inherit; font-size: 13px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); }
+  .topbar select.missing { border-color: var(--red); }
+  .topbar .status { font-size: 11.5px; color: var(--grey); flex: 1; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font-family: inherit; font-size: 12.5px; font-weight: bold; border: none; border-radius: 7px; padding: 8px 14px; cursor: pointer; background: var(--navy); color: #fff; }
+  button:hover { background: var(--navy-dark); }
+  button:disabled { background: #B4B4B4; cursor: not-allowed; }
+  button.secondary { background: #fff; color: var(--navy); border: 1px solid var(--navy); }
+  button.secondary:hover { background: #EEF3F8; }
+  button.small { padding: 6px 10px; font-size: 11.5px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 20px; }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .card .lbl { font-size: 9.5px; color: var(--grey); letter-spacing: .03em; text-transform: uppercase; margin-bottom: 4px; }
+  .card .val { font-size: 24px; font-weight: bold; }
+  .card .cap { font-size: 10px; color: var(--grey); margin-top: 2px; }
+  .v-navy { color: var(--navy); } .v-green { color: var(--green); } .v-red { color: var(--red); } .v-amber { color: var(--amber); }
+  .section { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 20px; }
+  .charts-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .chart-box { position: relative; height: 240px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 11.5px; }
+  th, td { border: 1px solid var(--border); padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: var(--navy); color: #fff; font-size: 10.5px; position: sticky; top: 0; }
+  tr:nth-child(even) td { background: var(--light-grey); }
+  .table-wrap { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10.5px; font-weight: bold; }
+  .badge.compliant { background: #E2EFDA; color: var(--green); }
+  .badge.attention { background: #FCE4D6; color: var(--amber); }
+  .badge.corrupted { background: #FCE4E4; color: var(--red); }
+  .badge.notfound { background: #ECECEC; color: var(--grey); }
+  .who-row { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; flex-wrap: wrap; }
+  .who-row label { font-size: 13px; font-weight: bold; color: var(--navy); }
+  .who-row select { font-family: inherit; font-size: 13px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border); }
+  .who-row select.missing { border-color: var(--red); }
+  .who-hint { font-size: 11px; color: var(--grey); }
+  .dropzone { border: 2px dashed var(--border); border-radius: 10px; background: #fff; padding: 28px 20px; text-align: center; cursor: pointer; }
+  .dropzone.drag { border-color: var(--navy); background: #EEF3F8; }
+  .dropzone .main { font-size: 14px; font-weight: bold; color: var(--navy); margin: 0 0 4px; }
+  .dropzone .hint { font-size: 11.5px; color: var(--grey); margin: 0; }
+  input[type=file] { display: none; }
+  .filterbar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .filterbar input, .filterbar select { font-family: inherit; font-size: 12px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); }
+  .toasts { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
+  .toast { min-width: 260px; max-width: 380px; background: #fff; border-radius: 8px; border-left: 4px solid var(--amber); box-shadow: 0 2px 10px rgba(0,0,0,.12); padding: 10px 14px; font-size: 12.5px; opacity: 0; transform: translateY(8px); transition: opacity .18s, transform .18s; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast b { display: block; font-size: 11.5px; color: var(--amber); margin-bottom: 2px; }
+  .toast.info { border-left-color: var(--navy); } .toast.info b { color: var(--navy); }
+  .toast.success { border-left-color: var(--green); } .toast.success b { color: var(--green); }
+  .toast.error { border-left-color: var(--red); } .toast.error b { color: var(--red); }
+  .qgrid-wrap { overflow-x: auto; }
+  .filename { color: var(--grey); font-size: 10.5px; }
+  .empty { color: var(--grey); font-size: 12.5px; padding: 16px 0; }
+  .gate-overlay { position: fixed; inset: 0; background: var(--navy-dark); display: flex; align-items: center; justify-content: center; z-index: 2000; padding: 20px; }
+  .gate-card { background: #fff; border-radius: 10px; padding: 28px 26px; max-width: 320px; width: 100%; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+  .gate-card h2 { margin: 0 0 6px; font-size: 16px; color: var(--navy); }
+  .gate-card p { margin: 0 0 16px; font-size: 12px; color: var(--grey); }
+  .gate-card input { width: 100%; font-family: inherit; font-size: 14px; padding: 9px 10px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 10px; box-sizing: border-box; text-align: center; }
+  .gate-card input.error { border-color: var(--red); }
+  .gate-card button { width: 100%; }
+  .gate-error { color: var(--red); font-size: 11.5px; min-height: 16px; margin: 6px 0 0; }
+  .gate-hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="gate-overlay" id="gateOverlay">
+  <div class="gate-card">
+    <h2>CIS Hardening Dashboard</h2>
+    <p>Enter the access code to continue.</p>
+    <input type="password" id="gateInput" placeholder="Access code" autocomplete="off">
+    <button id="gateSubmit">Enter</button>
+    <p class="gate-error" id="gateError"></p>
+  </div>
+</div>
+<div class="wrap gate-hidden" id="mainWrap">
+  <h1>CIS hardening live dashboard</h1>
+  <p class="sub">Connects automatically to the shared database on load &mdash; everyone opening this page sees the same live data with nothing to set up. If the connection is ever unreachable, no data is shown until it reconnects (this page does not store a local copy of device data). The Project URL / key fields below are only needed if you ever want to point this page at a different database.</p>
+
+  <div class="topbar">
+    <span class="status" id="statusLine"></span>
+    <div class="btnrow">
+      <input type="text" id="sheetUrlInput" placeholder="Supabase Project URL&hellip;" style="font-family:inherit;font-size:11.5px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);min-width:200px;">
+      <input type="text" id="sheetKeyInput" placeholder="Supabase anon public API key&hellip;" style="font-family:inherit;font-size:11.5px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);min-width:260px;">
+      <button class="secondary small" id="connectBtn">Connect</button>
+      <button class="secondary small" id="refreshBtn">Refresh now</button>
+      <button class="secondary small" id="exportJsonBtn">Export data (.json)</button>
+      <button class="secondary small" id="exportXlsxBtn">Export Excel snapshot</button>
+    </div>
+  </div>
+
+  <div class="who-row">
+    <label for="uploaderSelect">Your name</label>
+    <select id="uploaderSelect">
+      <option value="">Select your name&hellip;</option>
+      <option>John Allen Reyes</option><option>Paolo Dimayuga</option><option>Rachel Blanca</option>
+      <option>Jeffrey Jordan</option><option>Junar Paraoan</option>
+    </select>
+    <span class="who-hint">Required before uploading &mdash; also personalizes "My assignments" below and tags reports so they count toward your Q3 weekly target</span>
+  </div>
+
+  <div class="section">
+    <h2>My assignments</h2>
+    <p class="sub" id="myAssignmentsEmpty" style="margin-bottom:8px;">Select your name above to see your personal Q3 checklist &mdash; actual vs. target for the current week, and which specific devices are still pending.</p>
+    <div class="qgrid-wrap"><table id="myWeeklyTable"></table></div>
+    <p class="sub" id="myAssignmentsCaption" style="margin:8px 0 0;"></p>
+    <div class="table-wrap" style="margin-top:14px;"><table id="myAssignmentsTable"></table></div>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="section">
+    <h2>Charts</h2>
+    <div class="charts-row">
+      <div><div class="chart-box"><canvas id="chartStatus"></canvas></div></div>
+      <div><div class="chart-box"><canvas id="chartCoverage"></canvas></div></div>
+      <div><div class="chart-box"><canvas id="chartCompliance"></canvas></div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Upload CIS hardening reports</h2>
+    <div class="dropzone" id="dropzone">
+      <p class="main">Drag report .txt files here, or click to browse</p>
+      <p class="hint">Parsed instantly and merged into the dashboard below</p>
+      <input type="file" id="fileInput" accept=".txt" multiple>
+    </div>
+    <div id="uploadTableArea" style="margin-top:12px;"></div>
+  </div>
+
+  <div class="section">
+    <h2>Recent upload history</h2>
+    <p class="sub" style="margin-bottom:8px;">Last 25 reports recorded across everyone connected to the shared database, most recent first.</p>
+    <div class="table-wrap"><table id="uploadHistoryTable"></table></div>
+  </div>
+
+  <div class="section">
+    <h2>Q3 weekly targets (Aug 1 &ndash; Sep 30, 2026)</h2>
+    <div class="qgrid-wrap"><table id="qGrid"></table></div>
+  </div>
+
+  <div class="section">
+    <h2>Device explorer (RAW Devices)</h2>
+    <div class="filterbar">
+      <input type="text" id="devSearch" placeholder="Search email, model, identifier&hellip;" style="flex:1; min-width:200px;">
+      <select id="devStatusFilter">
+        <option value="">All statuses</option>
+        <option value="Done">Done (any)</option>
+        <option value="Not Found in Hardening Reports">Not found</option>
+      </select>
+    </div>
+    <div class="table-wrap"><table id="devTable"></table></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+const BOOTSTRAP = { rawDevices: [], machines: [], q3Assignments: [] };
+</script>
+<script>
+const TECHS = ['John Allen Reyes','Paolo Dimayuga','Rachel Blanca','Jeffrey Jordan','Junar Paraoan'];
+const PLACEHOLDERS = new Set(['', 'Default string', 'System Serial Number', null, undefined]);
+
+// Week 1 = first week of August (the last week of July was project
+// setup/ramp-up, not a tracked work week).
+const Q3_WEEKS = (() => {
+  const weeks = [];
+  let cur = new Date(2026, 7, 1);
+  const end = new Date(2026, 8, 30);
+  let wn = 1;
+  while (cur <= end) {
+    const we = new Date(Math.min(cur.getTime() + 6 * 86400000, end.getTime()));
+    weeks.push({ n: wn, s: new Date(cur), e: we });
+    cur = new Date(we.getTime() + 86400000);
+    wn++;
+  }
+  return weeks;
+})();
+
+function weekNumberFor(generatedStr) {
+  if (!generatedStr) return '';
+  const d = new Date(generatedStr);
+  if (isNaN(d)) return '';
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  for (const w of Q3_WEEKS) if (day >= w.s && day <= w.e) return w.n;
+  return 'Outside Q3';
+}
+
+function currentWeekNum() {
+  const today = new Date();
+  const day = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  for (const w of Q3_WEEKS) if (day >= w.s && day <= w.e) return w.n;
+  return null;
+}
+
+function fmtWeekLabel(w) {
+  const f = d => (d.getMonth() + 1) + '/' + d.getDate();
+  return 'Wk' + w.n + ' ' + f(w.s) + '-' + f(w.e);
+}
+
+// ---------------------------------------------------------------
+// State: either a live shared Supabase database (everyone reading/
+// writing the same backend) or, until that's configured, the
+// read-only snapshot baked into this page at build time.
+//
+// The project URL + anon key are just pointers — safe to keep in
+// this browser's localStorage, since they're not the data itself,
+// only where to find it and a public key scoped by Row Level
+// Security policies (read-all, insert-only — see supabase_setup.sql).
+// Every technician pastes the same two values once.
+// ---------------------------------------------------------------
+const SUPABASE_URL_KEY = 'cisSupabaseUrl_v1';
+const SUPABASE_ANON_KEY_KEY = 'cisSupabaseAnonKey_v1';
+const LOCAL_STATE_KEY = 'cisLiveDashboardLocalState_v1'; // only used pre-setup
+const MY_TECH_KEY = 'cisSelectedTech_v1';
+
+// Baked in so the dashboard auto-connects for everyone with zero setup —
+// this is the Publishable key, which is meant to be public (Supabase's
+// own model: safe in client-side code, scoped entirely by the Row Level
+// Security policies in supabase_setup.sql, not a secret). A saved value
+// in localStorage (from manually connecting to a different project)
+// still takes priority over these, so the override path keeps working.
+const BAKED_IN_SUPABASE_URL = 'https://mmgimpjkybiqauciitop.supabase.co';
+const BAKED_IN_SUPABASE_KEY = 'sb_publishable_88UoX3SBPemQCDS5ntKTIg_XFSCAq37';
+
+let serverUrl = BAKED_IN_SUPABASE_URL;
+let serverKey = BAKED_IN_SUPABASE_KEY;
+try { serverUrl = localStorage.getItem(SUPABASE_URL_KEY) || BAKED_IN_SUPABASE_URL; } catch (e) {}
+try { serverKey = localStorage.getItem(SUPABASE_ANON_KEY_KEY) || BAKED_IN_SUPABASE_KEY; } catch (e) {}
+
+let usingServer = false;
+let lastFetchedAt = null;
+let selfReports = {};
+
+// Records in BOOTSTRAP are flat (string/number/boolean fields only, no
+// nested objects/arrays), so a shallow per-object clone is enough here
+// and is meaningfully faster than a JSON.stringify/parse round-trip
+// over ~1,300 records.
+function cloneRows(rows) { return rows.map(r => Object.assign({}, r)); }
+
+function freshLocalState() {
+  return {
+    rawDevices: cloneRows(BOOTSTRAP.rawDevices),
+    machines: cloneRows(BOOTSTRAP.machines),
+    q3Assignments: cloneRows(BOOTSTRAP.q3Assignments),
+  };
+}
+
+function loadLocalState() {
+  try {
+    const raw = localStorage.getItem(LOCAL_STATE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return freshLocalState();
+}
+
+function saveLocalState() {
+  try { localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+let state = freshLocalState();
+
+// ---------------------------------------------------------------
+// Supabase's REST API (PostgREST) is built to be called directly
+// from browser fetch() — proper CORS support out of the box, no
+// JSONP tricks needed. Table columns are quoted exactly matching
+// these JS field names (see supabase_setup.sql), so no remapping is
+// needed between what the API returns and what the rest of this
+// file already expects.
+// ---------------------------------------------------------------
+function supabaseHeaders(key, extra) {
+  return Object.assign({
+    apikey: key,
+    Authorization: 'Bearer ' + key,
+  }, extra || {});
+}
+
+async function fetchStateFromServer(url, key) {
+  const base = url.replace(/\/+$/, '');
+  const [rawDevices, machines, q3Assignments] = await Promise.all([
+    supabaseSelect(base, key, 'raw_devices'),
+    supabaseSelect(base, key, 'machines'),
+    supabaseSelect(base, key, 'q3_assignments'),
+  ]);
+  return { rawDevices, machines, q3Assignments };
+}
+
+async function supabaseSelect(base, key, table) {
+  const res = await fetch(base + '/rest/v1/' + table + '?select=*', {
+    method: 'GET',
+    headers: supabaseHeaders(key),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error('Could not read "' + table + '" (HTTP ' + res.status + '). Check the Project URL and anon key are correct, and that supabase_setup.sql was run. ' + body.slice(0, 200));
+  }
+  return res.json();
+}
+
+async function supabaseInsert(base, key, table, row) {
+  const res = await fetch(base + '/rest/v1/' + table, {
+    method: 'POST',
+    headers: supabaseHeaders(key, { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
+    body: JSON.stringify(row),
+  });
+  if (res.status === 409) {
+    return { ok: false, duplicate: true, error: 'That report is already recorded on the shared database.' };
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    return { ok: false, error: 'Insert into "' + table + '" failed (HTTP ' + res.status + '). ' + body.slice(0, 300) };
+  }
+  return { ok: true };
+}
+
+async function postToServer(url, key, payload) {
+  const base = url.replace(/\/+$/, '');
+  const machineResult = await supabaseInsert(base, key, 'machines', payload.machine);
+  if (!machineResult.ok) return machineResult;
+  if (payload.newRawDevice) {
+    const r = await supabaseInsert(base, key, 'raw_devices', payload.newRawDevice);
+    if (!r.ok) return r;
+  }
+  if (payload.newQ3Row) {
+    const r = await supabaseInsert(base, key, 'q3_assignments', payload.newQ3Row);
+    if (!r.ok) return r;
+  }
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------
+// Derived computation: a RAW Devices row's live status considers
+// both its historic match (baked into the page) and any Machines
+// rows added this session (by matching Endpoint Serial Number).
+// ---------------------------------------------------------------
+function machinesBySerial() {
+  const map = new Map();
+  state.machines.forEach(m => {
+    if (m.serial) {
+      const k = String(m.serial).trim();
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(m);
+    }
+  });
+  return map;
+}
+
+function liveDeviceStatus(rd, bySerial) {
+  if (rd.cisStatus && String(rd.cisStatus).indexOf('Done') === 0) {
+    return { status: rd.cisStatus, live: false };
+  }
+  if (rd.endpointSerial && !PLACEHOLDERS.has(String(rd.endpointSerial).trim())) {
+    const hits = bySerial.get(String(rd.endpointSerial).trim());
+    if (hits && hits.length) {
+      const m = hits[0];
+      const fail = parseInt(m.fail, 10) || 0;
+      const derived = fail > 0 ? 'Done - Needs Attention' : 'Done - Compliant';
+      return { status: derived, live: true };
+    }
+  }
+  return { status: 'Not Found in Hardening Reports', live: false };
+}
+
+function computeStats() {
+  const bySerial = machinesBySerial();
+  const machines = state.machines;
+  const compliant = machines.filter(m => m.status === 'Compliant').length;
+  const needsAttention = machines.filter(m => m.status === 'Needs Attention').length;
+  const corrupted = machines.filter(m => m.status === 'Corrupted - Needs Re-run').length;
+
+  let done = 0, notFound = 0, actionable = 0;
+  const coverage = { 'Done - Compliant': 0, 'Done - Needs Attention': 0, 'Done - Report Corrupted (Manual Match)': 0, 'Not Found': 0 };
+  state.rawDevices.forEach(rd => {
+    const { status } = liveDeviceStatus(rd, bySerial);
+    if (status.indexOf('Done') === 0) {
+      done++;
+      if (coverage.hasOwnProperty(status)) coverage[status]++;
+      else coverage['Done - Compliant']++;
+    } else {
+      notFound++;
+      coverage['Not Found']++;
+      if (rd.endpointHost && !PLACEHOLDERS.has(String(rd.endpointHost).trim())) actionable++;
+    }
+  });
+
+  return {
+    reportArchive: machines.length, compliant, needsAttention, corrupted,
+    rawDevicesTracked: state.rawDevices.length, rawTaggedDone: done, notYetCompliant: notFound,
+    actionable, coverage, bySerial,
+  };
+}
+
+// ---------------------------------------------------------------
+// Report parsing (same rules validated earlier: handles both the
+// "renamed to" and "already named" Computer-line phrasings, falls
+// back to the filename if neither is present).
+// ---------------------------------------------------------------
+function parseReport(text, filename) {
+  const get = (re) => { const m = text.match(re); return m ? m[1].trim() : ''; };
+  const generated = get(/Generated:\s*(.+)/);
+  const computer = get(/Computer:\s*(.+)/);
+  const pass = get(/PASS\s*:\s*(\d+)/);
+  const fail = get(/FAIL\s*:\s*(\d+)/);
+  const skip = get(/SKIPPED\s*:\s*(\d+)/);
+  const serial = get(/Serial Number\s*:\s*(.+)/);
+
+  let identifier = '';
+  const renamedMatch = text.match(/renamed to '([^']+)'/);
+  if (renamedMatch) identifier = renamedMatch[1];
+  else if (computer) identifier = computer.replace(/\s*\(.*\)\s*$/, '').trim();
+  if (!identifier) {
+    const fnMatch = filename.match(/CIS-Home-Hardening-Report-(.+?)\.txt$/i);
+    if (fnMatch) identifier = fnMatch[1];
+  }
+
+  const site = identifier.indexOf('_') >= 0 ? identifier.split('_')[0] : (identifier || 'N/A');
+  const parsedOk = pass !== '' && identifier !== '';
+  let status;
+  if (!parsedOk) status = 'Corrupted - Needs Re-run';
+  else if (parseInt(fail || '0', 10) > 0) status = 'Needs Attention';
+  else status = 'Compliant';
+
+  const failLines = [];
+  const settingsBlockMatch = text.match(/--- Settings Applied[\s\S]*?(?=\n---\s|\n===)/);
+  const block = settingsBlockMatch ? settingsBlockMatch[0] : text;
+  const failRe = /FAIL\s+(\S.*?)\s{2,}(.*)/g;
+  let fm;
+  while ((fm = failRe.exec(block)) !== null) {
+    failLines.push(fm[2].trim() ? (fm[1].trim() + ' | ' + fm[2].trim()) : fm[1].trim());
+  }
+
+  return {
+    site, identifier, status, computer, pass: pass || '', fail: fail || '', skip: skip || '',
+    generated, serial, file: filename, failDetails: failLines.join(' ;; '), parsedOk,
+  };
+}
+
+// ---------------------------------------------------------------
+// DOM wiring
+// ---------------------------------------------------------------
+let charts = {};
+let uploadRows = [];
+const parsedFilenames = new Set();
+
+let pollTimer = null;
+
+// ---------------------------------------------------------------
+// Access-code gate — a speed bump, not real security. Enforced in
+// this page's own JS, so it stops casual/accidental visitors but not
+// anyone determined to view source; the actual data access control is
+// Supabase's Row Level Security (see supabase_setup.sql), which this
+// gate does not change at all. Passphrase is stored as a hash rather
+// than plaintext purely so a quick glance at the source doesn't hand
+// it over — a plain deterministic hash (not Web Crypto/SHA-256) is
+// used specifically so this works identically whether the page is
+// opened via file:// or https://, since Web Crypto's availability can
+// be inconsistent on file:// origins depending on the browser.
+// ---------------------------------------------------------------
+const GATE_HASH = '4a06e80c';
+const GATE_UNLOCKED_KEY = 'cisGateUnlocked_v1';
+
+function simpleHash(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+function unlockGate() {
+  const overlay = document.getElementById('gateOverlay');
+  const mainWrap = document.getElementById('mainWrap');
+  if (overlay) overlay.remove();
+  if (mainWrap) mainWrap.classList.remove('gate-hidden');
+  initApp();
+}
+
+function wireGate() {
+  const input = document.getElementById('gateInput');
+  const submitBtn = document.getElementById('gateSubmit');
+  const errorEl = document.getElementById('gateError');
+
+  const attempt = () => {
+    const value = input.value;
+    if (!value) return;
+    if (simpleHash(value) === GATE_HASH) {
+      try { localStorage.setItem(GATE_UNLOCKED_KEY, '1'); } catch (e) {}
+      unlockGate();
+      return;
+    }
+    errorEl.textContent = 'Incorrect access code.';
+    input.classList.add('error');
+    input.value = '';
+    input.focus();
+  };
+
+  submitBtn.addEventListener('click', attempt);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') attempt(); });
+  input.addEventListener('input', () => input.classList.remove('error'));
+  input.focus();
+}
+
+function init() {
+  let alreadyUnlocked = false;
+  try { alreadyUnlocked = localStorage.getItem(GATE_UNLOCKED_KEY) === '1'; } catch (e) {}
+
+  if (alreadyUnlocked) {
+    const overlay = document.getElementById('gateOverlay');
+    const mainWrap = document.getElementById('mainWrap');
+    if (overlay) overlay.remove();
+    if (mainWrap) mainWrap.classList.remove('gate-hidden');
+    initApp();
+  } else {
+    wireGate();
+  }
+}
+
+function initApp() {
+  wireTopbar();
+  wireUploader();
+  wireDeviceExplorer();
+
+  if (serverUrl && serverKey) {
+    connectToServer(serverUrl, serverKey, true);
+  } else {
+    state = loadLocalState();
+    usingServer = false;
+    renderAll();
+  }
+}
+
+async function connectToServer(url, key, silent) {
+  const connectBtn = document.getElementById('connectBtn');
+  const urlInput = document.getElementById('sheetUrlInput');
+  const keyInput = document.getElementById('sheetKeyInput');
+  if (urlInput) urlInput.value = url;
+  if (keyInput) keyInput.value = key;
+  if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = 'Connecting…'; }
+  try {
+    const data = await fetchStateFromServer(url, key);
+    state = { rawDevices: data.rawDevices, machines: data.machines, q3Assignments: data.q3Assignments };
+    usingServer = true;
+    serverUrl = url;
+    serverKey = key;
+    try { localStorage.setItem(SUPABASE_URL_KEY, url); localStorage.setItem(SUPABASE_ANON_KEY_KEY, key); } catch (e) {}
+    lastFetchedAt = new Date();
+    if (!silent) showToast('Connected — everyone using this URL now shares the same live data.', 'success', 'Connected to shared database');
+    startPolling();
+  } catch (err) {
+    console.error('Connect failed:', err);
+    usingServer = false;
+    state = loadLocalState();
+    showToast('Could not reach that database (' + err.message + '). Showing the local snapshot for now — check the Project URL and anon key, and that supabase_setup.sql was run.', 'error', 'Connection failed');
+  } finally {
+    if (connectBtn) { connectBtn.disabled = false; connectBtn.textContent = 'Connect'; }
+    renderAll();
+  }
+}
+
+function stateFingerprint(s) {
+  const lastM = s.machines[s.machines.length - 1];
+  return s.rawDevices.length + '|' + s.machines.length + '|' + s.q3Assignments.length + '|' + (lastM ? lastM.file + ':' + lastM.generated : '');
+}
+
+let lastFingerprint = null;
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (!usingServer || !serverUrl || !serverKey) return;
+    try {
+      const data = await fetchStateFromServer(serverUrl, serverKey);
+      const newState = { rawDevices: data.rawDevices, machines: data.machines, q3Assignments: data.q3Assignments };
+      lastFetchedAt = new Date();
+      // Every write appends (nothing is edited/removed in place), so
+      // row counts + the newest machine row are enough to know whether
+      // anything actually changed since the last poll. Most 30s polls
+      // won't have new data — skipping the render (charts, grid, device
+      // table) on those is what stops the page from visibly hitching
+      // every 30 seconds while someone's just reading it.
+      const fp = stateFingerprint(newState);
+      state = newState;
+      if (fp !== lastFingerprint) {
+        lastFingerprint = fp;
+        renderAll();
+      } else {
+        renderStatusLine(lastStats || computeStats());
+      }
+    } catch (err) {
+      console.error('Background refresh failed:', err);
+    }
+  }, 30000);
+}
+
+function showToast(message, type, title) {
+  const container = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast' + (type ? ' ' + type : '');
+  el.innerHTML = '<b>' + escapeHtml(title) + '</b>' + escapeHtml(message);
+  container.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 200); }, 4500);
+}
+
+function escapeHtml(s) {
+  return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+// ---- Topbar: connection to the shared Supabase database + export ----
+function wireTopbar() {
+  document.getElementById('exportJsonBtn').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'cis_dashboard_state_' + new Date().toISOString().slice(0, 10) + '.json';
+    a.click();
+    showToast('Downloaded current dashboard state (local backup only — does not affect the shared database).', 'success', 'Exported');
+  });
+
+  document.getElementById('exportXlsxBtn').addEventListener('click', exportXlsxSnapshot);
+
+  const urlInput = document.getElementById('sheetUrlInput');
+  const keyInput = document.getElementById('sheetKeyInput');
+  if (serverUrl) urlInput.value = serverUrl;
+  if (serverKey) keyInput.value = serverKey;
+
+  document.getElementById('connectBtn').addEventListener('click', () => {
+    const url = urlInput.value.trim();
+    const key = keyInput.value.trim();
+    if (!url || !key) { showToast('Paste both the Project URL and the anon public API key first.', 'warning', 'Details required'); return; }
+    connectToServer(url, key, false);
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', async () => {
+    if (!usingServer || !serverUrl || !serverKey) {
+      showToast('Not connected to a shared database yet — connect first.', 'warning', 'Nothing to refresh');
+      return;
+    }
+    try {
+      const data = await fetchStateFromServer(serverUrl, serverKey);
+      state = { rawDevices: data.rawDevices, machines: data.machines, q3Assignments: data.q3Assignments };
+      lastFetchedAt = new Date();
+      renderAll();
+      showToast('Pulled the latest data from the shared database.', 'success', 'Refreshed');
+    } catch (err) {
+      showToast('Refresh failed: ' + err.message, 'error', 'Refresh failed');
+    }
+  });
+}
+
+function exportXlsxSnapshot() {
+  const bySerial = machinesBySerial();
+  const wb = XLSX.utils.book_new();
+
+  const mHeader = ['Site','Identifier','Status','Computer','Pass','Fail','Skip','Generated','Serial','File','Fail Details','Uploaded By'];
+  const mRows = state.machines.map(m => [m.site,m.identifier,m.status,m.computer,m.pass,m.fail,m.skip,m.generated,m.serial,m.file,m.failDetails,m.uploadedBy||'']);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([mHeader].concat(mRows)), 'Machines');
+
+  const rHeader = ['Email','Mac Address','Device Model','Company Name','CIS Hardening Status (live)','Endpoint Host Name','Endpoint Serial Number'];
+  const rRows = state.rawDevices.map(rd => {
+    const st = liveDeviceStatus(rd, bySerial).status;
+    return [rd.email, rd.mac, rd.model, rd.company, st, rd.endpointHost, rd.endpointSerial];
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([rHeader].concat(rRows)), 'RAW Devices');
+
+  const qHeader = ['Technician','Week #','Week Dates','User Email','Device Model','Mac Address','Endpoint Host Name','Endpoint Serial Number','Self-Report By','Validated (auto)'];
+  const qRows = state.q3Assignments.map(a => {
+    const validated = a.endpointSerial && !PLACEHOLDERS.has(String(a.endpointSerial).trim())
+      ? (bySerial.has(String(a.endpointSerial).trim()) ? 'Yes' : 'No') : 'Manual Check Needed';
+    const sr = selfReports[a.endpointSerial];
+    return [a.tech, a.weekNum, a.weekDates, a.email, a.model, a.mac, a.endpointHost, a.endpointSerial, sr ? sr.uploadedBy : '', validated];
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([qHeader].concat(qRows)), 'Q3 Targets');
+
+  XLSX.writeFile(wb, 'CIS_Dashboard_snapshot_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  showToast('This is a data-only snapshot — no charts, formulas, or dropdowns (browser export limitation).', 'info', 'Exported .xlsx');
+}
+
+// ---- Uploader ----
+function wireUploader() {
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const uploaderSelect = document.getElementById('uploaderSelect');
+
+  // Remember the selected technician across reloads — the same name
+  // picker doubles as "who am I" for both uploads and the personal
+  // assignment list below, so nobody has to reselect it every visit.
+  try {
+    const savedTech = localStorage.getItem(MY_TECH_KEY);
+    if (savedTech) uploaderSelect.value = savedTech;
+  } catch (e) {}
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+  dropzone.addEventListener('drop', e => { e.preventDefault(); dropzone.classList.remove('drag'); handleFiles(e.dataTransfer.files); });
+  fileInput.addEventListener('change', e => { handleFiles(e.target.files); fileInput.value = ''; });
+  uploaderSelect.addEventListener('change', () => {
+    uploaderSelect.classList.remove('missing');
+    try { localStorage.setItem(MY_TECH_KEY, uploaderSelect.value); } catch (e) {}
+    renderMyAssignments(lastStats || computeStats());
+  });
+
+  function handleFiles(fileList) {
+    const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.txt'));
+    if (files.length === 0) return;
+    const uploader = uploaderSelect.value;
+    if (!uploader) {
+      uploaderSelect.classList.add('missing');
+      showToast('Select your name before uploading reports.', 'warning', 'Name required');
+      return;
+    }
+    uploaderSelect.classList.remove('missing');
+
+    files.forEach(f => {
+      // Restrict duplicates against the persisted state (state.machines),
+      // not just this page load — parsedFilenames alone would reset on
+      // reload even though uploads are saved to localStorage.
+      if (parsedFilenames.has(f.name) || state.machines.some(m => m.file === f.name)) {
+        showToast(f.name, 'warning', 'Already uploaded — blocked');
+        return;
+      }
+      parsedFilenames.add(f.name);
+      const reader = new FileReader();
+      reader.onerror = () => {
+        showToast('Could not read "' + f.name + '" — the browser reported a file error.', 'warning', 'Upload failed');
+      };
+      reader.onload = async e => {
+        // Everything below can fail for reasons a malformed or unexpected
+        // report file might trigger (missing fields, odd encoding, etc.).
+        // Never let that fail silently — always tell the user what broke.
+        try {
+          const parsed = parseReport(e.target.result, f.name);
+          if (!parsed.parsedOk) {
+            showToast('"' + f.name + '" could not be parsed (missing Pass/Fail counts or computer name) — nothing was added.', 'warning', 'Report not recognized');
+          }
+          const dupe = state.machines.find(m => m.identifier === parsed.identifier && m.generated === parsed.generated);
+          if (dupe) {
+            showToast('"' + parsed.identifier + '" at ' + parsed.generated + ' is already recorded (from "' + dupe.file + '"). This file was not added.', 'warning', 'Duplicate report blocked');
+            return;
+          }
+          parsed.uploadedBy = uploader;
+          parsed.weekNum = weekNumberFor(parsed.generated);
+          uploadRows.push(parsed);
+          await mergeIntoState(parsed, uploader);
+          renderUploadTable();
+          renderAll();
+          showToast('"' + parsed.identifier + '" processed and the dashboard above has been refreshed.', 'success', 'Upload complete');
+        } catch (err) {
+          console.error('Upload processing failed:', err);
+          showToast('"' + f.name + '" hit an error while processing: ' + err.message + '. Nothing was added — try again or tell Claude the exact error.', 'error', 'Upload failed');
+        }
+      };
+      reader.readAsText(f);
+    });
+  }
+}
+
+async function mergeIntoState(parsed, uploader) {
+  const machineRow = {
+    site: parsed.site, identifier: parsed.identifier, status: parsed.status, computer: parsed.computer,
+    pass: parsed.pass, fail: parsed.fail, skip: parsed.skip, generated: parsed.generated,
+    serial: parsed.serial, file: parsed.file, failDetails: parsed.failDetails,
+    uploadedBy: uploader, weekNum: parsed.weekNum,
+  };
+
+  const key = parsed.serial ? String(parsed.serial).trim() : '';
+  const knownDevice = key && state.rawDevices.some(rd => rd.endpointSerial && String(rd.endpointSerial).trim() === key);
+
+  let newRawDevice = null;
+  let newQ3Row = null;
+  if (key && !knownDevice) {
+    // Machine was never in the endpoint inventory / tracked list at all.
+    // Add it to RAW Devices so it shows up in the device explorer, and
+    // credit the uploader with an extra accomplishment (not counted
+    // against anyone's pre-set target, since it wasn't assigned).
+    newRawDevice = {
+      email: '', mac: '', model: '(new machine — added from uploaded report)', company: 'Bell-Kenz Pharma, Inc',
+      cisStatus: null, identifier: parsed.identifier, computer: parsed.computer, matchMethod: 'New machine (added via uploader)',
+      endpointHost: parsed.identifier, endpointSerial: parsed.serial,
+    };
+    newQ3Row = {
+      tech: uploader, weekNum: parsed.weekNum, weekDates: '', email: '(new machine)', model: parsed.computer,
+      mac: '', endpointHost: parsed.identifier, endpointSerial: parsed.serial,
+      alreadyDone: false, extra: true,
+    };
+  }
+
+  if (usingServer && serverUrl && serverKey) {
+    // Authoritative write goes to the shared Supabase database; every
+    // connected technician picks it up on their next poll/refresh.
+    // Re-fetch after a successful write so this browser reflects
+    // exactly what the database now has (including anything anyone
+    // else just added).
+    const result = await postToServer(serverUrl, serverKey, { machine: machineRow, newRawDevice, newQ3Row });
+    if (!result.ok) {
+      if (result.duplicate) {
+        showToast('"' + parsed.identifier + '" at ' + parsed.generated + ' is already on the shared database. This file was not added.', 'warning', 'Duplicate report blocked');
+        return;
+      }
+      throw new Error(result.error || 'Shared database rejected the write.');
+    }
+    const data = await fetchStateFromServer(serverUrl, serverKey);
+    state = { rawDevices: data.rawDevices, machines: data.machines, q3Assignments: data.q3Assignments };
+    lastFetchedAt = new Date();
+    if (newRawDevice) {
+      showToast('"' + parsed.identifier + '" wasn\'t in the tracked device list — added it to the shared database and credited the extra work to ' + uploader + '.', 'success', 'New machine added');
+    } else {
+      const assignments = state.q3Assignments.filter(a => a.endpointSerial && String(a.endpointSerial).trim() === key);
+      assignments.forEach(a => {
+        if (a.tech !== uploader) {
+          showToast('"' + parsed.identifier + '" is assigned to ' + a.tech + ' but was uploaded by ' + uploader + '.', 'warning', 'Assignment mismatch');
+        }
+      });
+      if (assignments.length) showToast(parsed.identifier + ' matched to ' + assignments.length + ' Q3 assignment row(s) for ' + uploader + '. Everyone connected will see this on their next refresh.', 'success', 'Counted toward weekly target');
+    }
+    return;
+  }
+
+  // No shared database configured yet — fall back to this browser's
+  // own local copy so the tool still works standalone before setup.
+  state.machines.push(machineRow);
+  if (newRawDevice) {
+    state.rawDevices.push(newRawDevice);
+    state.q3Assignments.push(newQ3Row);
+    showToast('"' + parsed.identifier + '" wasn\'t in the tracked device list — added it and credited the extra work to ' + uploader + '. (Not connected to a shared database — this is only visible in this browser.)', 'success', 'New machine added');
+  } else if (key) {
+    const assignments = state.q3Assignments.filter(a => a.endpointSerial && String(a.endpointSerial).trim() === key);
+    assignments.forEach(a => {
+      selfReports[key] = { uploadedBy: uploader, generated: parsed.generated };
+      if (a.tech !== uploader) {
+        showToast('"' + parsed.identifier + '" is assigned to ' + a.tech + ' but was uploaded by ' + uploader + '.', 'warning', 'Assignment mismatch');
+      }
+    });
+    if (assignments.length) showToast(parsed.identifier + ' matched to ' + assignments.length + ' Q3 assignment row(s) for ' + uploader + '. (Not connected to a shared database — connect above so others see this too.)', 'success', 'Counted toward weekly target');
+  }
+  saveLocalState();
+}
+
+function renderUploadTable() {
+  const area = document.getElementById('uploadTableArea');
+  if (uploadRows.length === 0) { area.innerHTML = ''; return; }
+  const badgeClass = s => s === 'Compliant' ? 'compliant' : (s === 'Needs Attention' ? 'attention' : 'corrupted');
+  let html = '<div class="table-wrap"><table><thead><tr><th>Site</th><th>Identifier</th><th>Status</th><th>Pass</th><th>Fail</th><th>Serial</th><th>File</th><th>Uploaded by</th><th>Q3 week</th></tr></thead><tbody>';
+  uploadRows.forEach(r => {
+    html += '<tr><td>' + escapeHtml(r.site) + '</td><td>' + escapeHtml(r.identifier) + '</td><td><span class="badge ' + badgeClass(r.status) + '">' + escapeHtml(r.status) + '</span></td><td>' + escapeHtml(r.pass) + '</td><td>' + escapeHtml(r.fail) + '</td><td>' + escapeHtml(r.serial) + '</td><td class="filename">' + escapeHtml(r.file) + '</td><td>' + escapeHtml(r.uploadedBy) + '</td><td>' + escapeHtml(r.weekNum) + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  area.innerHTML = html;
+}
+
+// ---- Cards ----
+function renderCards(stats) {
+  const cards = [
+    ['Report archive', stats.reportArchive, 'machine reports collected', 'v-navy'],
+    ['Compliant', stats.compliant, 'Machines sheet', 'v-green'],
+    ['Needs attention', stats.needsAttention, 'Machines sheet', 'v-amber'],
+    ['Corrupted files', stats.corrupted, 'unreadable, needs re-run', 'v-red'],
+    ['Raw devices tracked', stats.rawDevicesTracked, 'endpoint inventory rows', 'v-navy'],
+    ['CIS compliance done', stats.rawTaggedDone, 'devices flagged Done', 'v-green'],
+    ['Not yet compliant', stats.notYetCompliant, 'no CIS-Done match yet', 'v-red'],
+    ['Actionable', stats.actionable, 'known device, no report yet', 'v-amber'],
+  ];
+  document.getElementById('cards').innerHTML = cards.map(c =>
+    '<div class="card"><div class="lbl">' + escapeHtml(c[0]) + '</div><div class="val ' + c[3] + '">' + c[1] + '</div><div class="cap">' + escapeHtml(c[2]) + '</div></div>'
+  ).join('');
+}
+
+// ---- Charts ----
+function renderCharts(stats) {
+  // Categories/labels never change (they're fixed sets baked into
+  // computeStats), only the underlying counts do — so after the first
+  // render we just push new numbers into the existing chart and call
+  // update() instead of destroying and recreating the canvas each time.
+  // Destroy+recreate on every render (including the 30s auto-poll) was
+  // the single biggest source of visible jank; in-place update() is
+  // dramatically cheaper and has no flash/flicker.
+  if (charts.status) {
+    charts.status.data.datasets[0].data = [stats.compliant, stats.needsAttention, stats.corrupted];
+    charts.status.update();
+  } else {
+    charts.status = new Chart(document.getElementById('chartStatus'), {
+      type: 'bar',
+      data: { labels: ['Compliant', 'Needs Attention', 'Corrupted'], datasets: [{ data: [stats.compliant, stats.needsAttention, stats.corrupted], backgroundColor: ['#639922', '#EF9F27', '#E24B4A'] }] },
+      options: { plugins: { legend: { display: false }, title: { display: true, text: 'Report status breakdown' } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } },
+    });
+  }
+
+  const covLabels = Object.keys(stats.coverage);
+  if (charts.coverage) {
+    charts.coverage.data.labels = covLabels;
+    charts.coverage.data.datasets[0].data = covLabels.map(k => stats.coverage[k]);
+    charts.coverage.update();
+  } else {
+    charts.coverage = new Chart(document.getElementById('chartCoverage'), {
+      type: 'pie',
+      data: { labels: covLabels, datasets: [{ data: covLabels.map(k => stats.coverage[k]), backgroundColor: ['#639922', '#EF9F27', '#E24B4A', '#B4B2A9'] }] },
+      options: { plugins: { title: { display: true, text: 'RAW device tagging coverage' }, legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } } } },
+    });
+  }
+
+  if (charts.compliance) {
+    charts.compliance.data.datasets[0].data = [stats.rawTaggedDone, stats.notYetCompliant];
+    charts.compliance.update();
+  } else {
+    charts.compliance = new Chart(document.getElementById('chartCompliance'), {
+      type: 'doughnut',
+      data: { labels: ['Done', 'Not done'], datasets: [{ data: [stats.rawTaggedDone, stats.notYetCompliant], backgroundColor: ['#0F6E56', '#A32D2D'] }] },
+      options: { plugins: { title: { display: true, text: 'CIS compliance flag' }, legend: { position: 'right' } } },
+    });
+  }
+}
+
+function destroyChart(key) { if (charts[key]) { charts[key].destroy(); delete charts[key]; } }
+
+// ---- Q3 grid ----
+function renderQ3Grid(stats) {
+  const byTechWeek = {};
+  const alreadyDone = {};
+  const extra = {};
+  const extraByWeek = {}; // tech -> weekNum -> count, so "extra" credit shows under the week it actually happened
+  TECHS.forEach(t => {
+    byTechWeek[t] = {};
+    alreadyDone[t] = 0;
+    extra[t] = 0;
+    extraByWeek[t] = {};
+    Q3_WEEKS.forEach(w => { byTechWeek[t][w.n] = { target: 0, validated: 0 }; extraByWeek[t][w.n] = 0; });
+  });
+
+  state.q3Assignments.forEach(a => {
+    if (!byTechWeek[a.tech]) return;
+    if (a.alreadyDone) { alreadyDone[a.tech]++; return; }
+    if (a.extra) {
+      // A device that wasn't in the original tracked list, found via an
+      // uploaded report. Still shown in "Extra (unassigned)" so it's
+      // visible as bonus/unplanned work, but it also counts toward
+      // "Already done" credit, attributed to the week it was reported.
+      extra[a.tech]++;
+      alreadyDone[a.tech]++;
+      if (extraByWeek[a.tech][a.weekNum] !== undefined) extraByWeek[a.tech][a.weekNum]++;
+      return;
+    }
+    const cell = byTechWeek[a.tech][a.weekNum];
+    if (!cell) return;
+    cell.target++;
+    const key = a.endpointSerial ? String(a.endpointSerial).trim() : '';
+    const validated = key && !PLACEHOLDERS.has(key) && stats.bySerial.has(key);
+    if (validated) cell.validated++;
+  });
+
+  let html = '<thead><tr><th>Technician</th><th>Already done</th><th>New target</th>';
+  Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
+  html += '<th>Validated</th><th>% of new target</th><th>Extra (unassigned)</th><th>Combined total</th></tr></thead><tbody>';
+
+  const totals = { alreadyDone: 0, target: 0, validated: 0, extra: 0 };
+  TECHS.forEach(t => {
+    let techTarget = 0, techValidated = 0;
+    let weekCells = '';
+    Q3_WEEKS.forEach(w => {
+      const c = byTechWeek[t][w.n];
+      techTarget += c.target; techValidated += c.validated;
+      const ex = extraByWeek[t][w.n];
+      weekCells += '<td style="text-align:center;">' + c.target + (c.validated ? ' <span style="color:var(--green);font-weight:bold;">(' + c.validated + ')</span>' : '') + (ex ? ' <span style="color:var(--navy);font-weight:bold;">+' + ex + '</span>' : '') + '</td>';
+    });
+    const pct = techTarget ? Math.round((techValidated / techTarget) * 100) : 0;
+    html += '<tr><td>' + escapeHtml(t) + '</td>' +
+      '<td style="text-align:center;color:var(--green);font-weight:bold;">' + alreadyDone[t] + '</td>' +
+      '<td style="text-align:center;font-weight:bold;">' + techTarget + '</td>' + weekCells +
+      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techValidated + '</td>' +
+      '<td style="text-align:center;">' + pct + '%</td>' +
+      '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td>' +
+      '<td style="text-align:center;font-weight:bold;">' + (alreadyDone[t] + techTarget) + '</td></tr>';
+    totals.alreadyDone += alreadyDone[t]; totals.target += techTarget; totals.validated += techValidated; totals.extra += extra[t];
+  });
+  const totalPct = totals.target ? Math.round((totals.validated / totals.target) * 100) : 0;
+  html += '<tr style="font-weight:bold;background:var(--light-grey);"><td>TOTAL</td>' +
+    '<td style="text-align:center;">' + totals.alreadyDone + '</td>' +
+    '<td style="text-align:center;">' + totals.target + '</td>';
+  Q3_WEEKS.forEach(w => {
+    let wt = 0, wv = 0, we = 0;
+    TECHS.forEach(t => { wt += byTechWeek[t][w.n].target; wv += byTechWeek[t][w.n].validated; we += extraByWeek[t][w.n]; });
+    html += '<td style="text-align:center;">' + wt + (wv ? ' <span style="color:var(--green);">(' + wv + ')</span>' : '') + (we ? ' <span style="color:var(--navy);">+' + we + '</span>' : '') + '</td>';
+  });
+  html += '<td style="text-align:center;">' + totals.validated + '</td><td style="text-align:center;">' + totalPct + '%</td>' +
+    '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td>' +
+    '<td style="text-align:center;">' + (totals.alreadyDone + totals.target) + '</td></tr>';
+  html += '</tbody>';
+  document.getElementById('qGrid').innerHTML = html;
+}
+
+// ---- Device explorer ----
+function debounce(fn, delay) {
+  let t = null;
+  return (...args) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn(...args), delay);
+  };
+}
+
+function wireDeviceExplorer() {
+  // Debounced: filtering/searching doesn't need to recompute on every
+  // single keystroke, only once typing pauses briefly. This was the
+  // most noticeable source of "laggy while typing" — computeStats()
+  // rebuilds a Map over every machine report and classifies all 600+
+  // tracked devices, which isn't free to do on every keypress.
+  const debouncedRender = debounce(() => renderDeviceTable(), 180);
+  document.getElementById('devSearch').addEventListener('input', debouncedRender);
+  document.getElementById('devStatusFilter').addEventListener('change', debouncedRender);
+}
+
+function renderDeviceTable(stats) {
+  // Reuse the stats already computed by the last full renderAll() when
+  // available (nothing about search/filter changes bySerial), instead
+  // of rebuilding it from scratch — only fall back to a fresh
+  // computeStats() if none exists yet.
+  stats = stats || lastStats || computeStats();
+  const q = document.getElementById('devSearch').value.trim().toLowerCase();
+  const statusFilter = document.getElementById('devStatusFilter').value;
+  const badgeClass = s => s.indexOf('Compliant') >= 0 ? 'compliant' : (s.indexOf('Needs Attention') >= 0 ? 'attention' : (s.indexOf('Corrupted') >= 0 ? 'corrupted' : 'notfound'));
+
+  let rows = state.rawDevices.map(rd => {
+    const st = liveDeviceStatus(rd, stats.bySerial);
+    return { rd, status: st.status, live: st.live };
+  });
+
+  if (q) {
+    rows = rows.filter(r => (r.rd.email || '').toLowerCase().includes(q) || (r.rd.model || '').toLowerCase().includes(q) || (r.rd.endpointHost || '').toLowerCase().includes(q));
+  }
+  if (statusFilter === 'Done') rows = rows.filter(r => r.status.indexOf('Done') === 0);
+  else if (statusFilter) rows = rows.filter(r => r.status === statusFilter);
+
+  rows = rows.slice(0, 300);
+
+  let html = '<thead><tr><th>Email</th><th>Model</th><th>Status</th><th>Endpoint host</th><th>Endpoint serial</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    html += '<tr><td>' + escapeHtml(r.rd.email) + '</td><td>' + escapeHtml(r.rd.model) + '</td>' +
+      '<td><span class="badge ' + badgeClass(r.status) + '">' + escapeHtml(r.status) + (r.live ? ' ⭐' : '') + '</span></td>' +
+      '<td>' + escapeHtml(r.rd.endpointHost) + '</td><td>' + escapeHtml(r.rd.endpointSerial) + '</td></tr>';
+  });
+  html += '</tbody>';
+  document.getElementById('devTable').innerHTML = html;
+}
+
+// ---- Status line + master render ----
+function renderStatusLine(stats) {
+  const uploadedCount = state.machines.filter(m => m.uploadedBy).length;
+  const base = stats.rawDevicesTracked + ' devices tracked · ' + stats.reportArchive + ' machine reports (' + uploadedCount + ' with an uploader on record)';
+  let connLabel;
+  if (usingServer) {
+    const t = lastFetchedAt ? lastFetchedAt.toLocaleTimeString() : '';
+    connLabel = ' · 🟢 connected to shared database' + (t ? ' (last synced ' + t + ')' : '');
+  } else {
+    connLabel = ' · 🔴 not connected — paste the shared database details above so everyone sees the same data';
+  }
+  document.getElementById('statusLine').textContent = base + connLabel;
+}
+
+let chartsLibMissing = false;
+let lastStats = null; // reused by the debounced search/filter handler so it doesn't recompute stats on every keystroke
+
+function renderUploadHistory() {
+  const area = document.getElementById('uploadHistoryTable');
+  if (!area) return;
+  // Only rows with a real uploader are "uploads" — the baseline
+  // Machines data imported at setup has no uploadedBy, so this only
+  // shows actual report submissions, newest first. Sheet/local writes
+  // always append, so the tail of the array is the most recent.
+  const uploaded = state.machines.filter(m => m.uploadedBy);
+  if (uploaded.length === 0) {
+    area.innerHTML = '<thead><tr><th>No uploads recorded yet</th></tr></thead>';
+    return;
+  }
+  const recent = uploaded.slice(-25).reverse();
+  const badgeClass = s => s === 'Compliant' ? 'compliant' : (s === 'Needs Attention' ? 'attention' : (s === 'Corrupted - Needs Re-run' ? 'corrupted' : 'notfound'));
+  let html = '<thead><tr><th>Generated</th><th>Uploaded by</th><th>Site</th><th>Identifier</th><th>Status</th><th>Pass</th><th>Fail</th><th>File</th></tr></thead><tbody>';
+  recent.forEach(m => {
+    html += '<tr><td>' + escapeHtml(m.generated) + '</td><td>' + escapeHtml(m.uploadedBy) + '</td><td>' + escapeHtml(m.site) + '</td><td>' + escapeHtml(m.identifier) + '</td>' +
+      '<td><span class="badge ' + badgeClass(m.status) + '">' + escapeHtml(m.status) + '</span></td><td>' + escapeHtml(m.pass) + '</td><td>' + escapeHtml(m.fail) + '</td>' +
+      '<td class="filename">' + escapeHtml(m.file) + '</td></tr>';
+  });
+  html += '</tbody>';
+  area.innerHTML = html;
+}
+
+// ---- Personal "My Assignments" view ----
+// Reuses the same "Your name" picker used for uploads as the identity
+// for this section — no separate login, consistent with how the rest
+// of the page already avoids per-user auth.
+function renderMyAssignments(stats) {
+  const summaryArea = document.getElementById('myWeeklyTable');
+  const detailArea = document.getElementById('myAssignmentsTable');
+  const emptyMsg = document.getElementById('myAssignmentsEmpty');
+  if (!summaryArea || !detailArea) return;
+
+  const tech = document.getElementById('uploaderSelect').value;
+  if (!tech) {
+    summaryArea.innerHTML = '';
+    detailArea.innerHTML = '';
+    if (emptyMsg) emptyMsg.style.display = '';
+    return;
+  }
+  if (emptyMsg) emptyMsg.style.display = 'none';
+
+  const mine = state.q3Assignments.filter(a => a.tech === tech);
+  const isValidated = a => {
+    const key = a.endpointSerial ? String(a.endpointSerial).trim() : '';
+    return key && !PLACEHOLDERS.has(key) && stats.bySerial.has(key);
+  };
+
+  // ---- Actual vs target, per week ----
+  const byWeek = {};
+  Q3_WEEKS.forEach(w => { byWeek[w.n] = { target: 0, actual: 0 }; });
+  let alreadyDoneCount = 0, extraCount = 0;
+  mine.forEach(a => {
+    if (a.alreadyDone) { alreadyDoneCount++; return; }
+    if (a.extra) { extraCount++; return; }
+    const cell = byWeek[a.weekNum];
+    if (!cell) return;
+    cell.target++;
+    if (isValidated(a)) cell.actual++;
+  });
+
+  // Just the current week's actual vs. target, not the full Q3 breakdown —
+  // that's what someone checking this mid-week actually wants to know.
+  const curWeekNum = currentWeekNum();
+  const curWeek = Q3_WEEKS.find(w => w.n === curWeekNum);
+  let sHtml = '<thead><tr><th>Current week</th><th>Target</th><th>Actual</th><th>Remaining</th><th>Status</th></tr></thead><tbody>';
+  if (!curWeek) {
+    sHtml += '<tr><td colspan="5" class="empty">Today\'s date falls outside the Q3 tracking window (Aug 1 \u2013 Sep 30, 2026).</td></tr>';
+  } else {
+    const c = byWeek[curWeek.n];
+    const remaining = Math.max(0, c.target - c.actual);
+    let badge, badgeClass;
+    if (c.target === 0) { badge = 'No target'; badgeClass = 'notfound'; }
+    else if (c.actual >= c.target) { badge = 'Complete'; badgeClass = 'compliant'; }
+    else { badge = remaining + ' left'; badgeClass = 'attention'; }
+    sHtml += '<tr><td>' + fmtWeekLabel(curWeek) + '</td><td style="text-align:center;">' + c.target + '</td>' +
+      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + c.actual + '</td>' +
+      '<td style="text-align:center;">' + remaining + '</td>' +
+      '<td><span class="badge ' + badgeClass + '">' + badge + '</span></td></tr>';
+  }
+  sHtml += '</tbody>';
+  summaryArea.innerHTML = sHtml;
+  const capHtml = (alreadyDoneCount || extraCount)
+    ? (alreadyDoneCount ? alreadyDoneCount + ' already done pre-Q3' : '') + (extraCount ? (alreadyDoneCount ? ' · ' : '') + '+' + extraCount + ' extra credited' : '')
+    : '';
+  const capEl = document.getElementById('myAssignmentsCaption');
+  if (capEl) capEl.textContent = capHtml;
+
+  // ---- Device-level detail list — what to actually go do, soonest first ----
+  const rows = mine.map(a => ({
+    a,
+    weekLabel: a.alreadyDone ? 'Pre-Q3' : (a.extra ? 'Extra' : (Q3_WEEKS.find(w => w.n === a.weekNum) ? fmtWeekLabel(Q3_WEEKS.find(w => w.n === a.weekNum)) : String(a.weekNum || ''))),
+    validated: a.alreadyDone || isValidated(a),
+    sortWeek: a.alreadyDone ? -1 : (a.extra ? 999 : (a.weekNum || 0)),
+  }));
+  rows.sort((x, y) => {
+    if (x.validated !== y.validated) return x.validated ? 1 : -1; // pending work first
+    return x.sortWeek - y.sortWeek;
+  });
+
+  let dHtml = '<thead><tr><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Endpoint serial</th><th>Status</th></tr></thead><tbody>';
+  if (rows.length === 0) {
+    dHtml += '<tr><td colspan="6" class="empty">No devices assigned to ' + escapeHtml(tech) + ' yet.</td></tr>';
+  } else {
+    rows.forEach(r => {
+      const badgeClass = r.validated ? 'compliant' : 'attention';
+      const badgeText = r.validated ? 'Done' : 'Pending';
+      const email = r.a.email && r.a.email !== '(new machine)' ? r.a.email : '—';
+      dHtml += '<tr><td>' + escapeHtml(r.weekLabel) + '</td><td>' + escapeHtml(email) + '</td><td>' + escapeHtml(r.a.model) + '</td>' +
+        '<td>' + escapeHtml(r.a.endpointHost) + '</td><td>' + escapeHtml(r.a.endpointSerial) + '</td>' +
+        '<td><span class="badge ' + badgeClass + '">' + badgeText + '</span></td></tr>';
+    });
+  }
+  dHtml += '</tbody>';
+  detailArea.innerHTML = dHtml;
+}
+
+function renderAll() {
+  const stats = computeStats();
+  lastStats = stats;
+  renderStatusLine(stats);
+  renderCards(stats);
+  try {
+    if (typeof Chart !== 'undefined') {
+      renderCharts(stats);
+    } else if (!chartsLibMissing) {
+      chartsLibMissing = true;
+      const el = document.getElementById('chartStatus');
+      const row = el && el.closest('.section') && el.closest('.section').querySelector('.charts-row');
+      if (row) row.innerHTML = '<p class="empty">Charts library did not load (offline?) - cards and tables below are unaffected.</p>';
+    }
+  } catch (e) {
+    console.error('Chart rendering failed:', e);
+  }
+  renderMyAssignments(stats);
+  renderQ3Grid(stats);
+  renderDeviceTable(stats);
+  renderUploadHistory();
+  lastFingerprint = stateFingerprint(state);
+}
+
+document.addEventListener('DOMContentLoaded', init);
+if (document.readyState !== 'loading') init();
+
+</script>
+</body>
+</html>
