@@ -938,33 +938,28 @@ function destroyChart(key) { if (charts[key]) { charts[key].destroy(); delete ch
 
 // ---- Q3 grid ----
 function renderQ3Grid(stats) {
-  // Targets are an open quota now: the assigned rows still SET each
-  // tech's weekly target number, but "actual" counts whatever reports
-  // that tech actually uploaded in that week — on any device, assigned
-  // to them or not.
+  // Targets are an open quota: assigned rows SET each tech's weekly
+  // target, but "actual" counts what they actually completed — their
+  // uploaded reports for that week, on any device, PLUS the pre-Q3
+  // work already credited to them (those devices were hardened before
+  // this dashboard existed, so there's no uploaded report carrying
+  // their name; the credit lives in the assignment rows instead).
   const targetByTechWeek = {};
   const actualByTechWeek = {};
-  const alreadyDone = {};
+  const preQ3 = {};
   const extra = {};
   TECHS.forEach(t => {
     targetByTechWeek[t] = {};
     actualByTechWeek[t] = {};
-    alreadyDone[t] = 0;
+    preQ3[t] = 0;
     extra[t] = 0;
     Q3_WEEKS.forEach(w => { targetByTechWeek[t][w.n] = 0; actualByTechWeek[t][w.n] = 0; });
   });
 
   state.q3Assignments.forEach(a => {
     if (!targetByTechWeek[a.tech]) return;
-    if (a.alreadyDone) { alreadyDone[a.tech]++; return; }
-    if (a.extra) {
-      // Devices found via upload that were never in the tracked list.
-      // Counted in the "Extra (unassigned)" column for visibility; the
-      // work itself already shows up in the weekly actuals below, since
-      // those are derived from uploaded reports.
-      extra[a.tech]++;
-      return;
-    }
+    if (a.alreadyDone) { preQ3[a.tech]++; return; }
+    if (a.extra) { extra[a.tech]++; return; }
     if (targetByTechWeek[a.tech][a.weekNum] !== undefined) targetByTechWeek[a.tech][a.weekNum]++;
   });
 
@@ -974,36 +969,44 @@ function renderQ3Grid(stats) {
     if (actualByTechWeek[m.uploadedBy][wn] !== undefined) actualByTechWeek[m.uploadedBy][wn]++;
   });
 
-  let html = '<thead><tr><th>Technician</th><th>Already done</th><th>Target</th>';
+  let html = '<thead><tr><th>Technician</th><th>Pre-Q3 done</th><th>Q3 target</th>';
   Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
-  html += '<th>Actual</th><th>% of target</th><th>Extra (unassigned)</th><th>Combined total</th></tr></thead><tbody>';
+  html += '<th>Total actual</th><th>Total scope</th><th>% complete</th><th>Extra (unassigned)</th></tr></thead><tbody>';
 
-  const totals = { alreadyDone: 0, target: 0, actual: 0, extra: 0 };
+  const totals = { preQ3: 0, target: 0, actual: 0, extra: 0 };
   TECHS.forEach(t => {
-    let techTarget = 0, techActual = 0;
+    let techTarget = 0, techWeekActual = 0;
     let weekCells = '';
     Q3_WEEKS.forEach(w => {
       const tgt = targetByTechWeek[t][w.n];
       const act = actualByTechWeek[t][w.n];
-      techTarget += tgt; techActual += act;
+      techTarget += tgt; techWeekActual += act;
       const pctW = tgt ? Math.round((act / tgt) * 100) : 0;
       const pctColor = !tgt ? 'var(--grey)' : (act >= tgt ? 'var(--green)' : 'var(--amber)');
       weekCells += '<td style="text-align:center;">' + act + '/' + tgt +
         (tgt ? '<br><span style="color:' + pctColor + ';font-weight:bold;font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
     });
-    const pct = techTarget ? Math.round((techActual / techTarget) * 100) : 0;
+    // Total actual and % are measured against the tech's FULL scope
+    // (pre-Q3 credit + remaining Q3 target), so someone who did a chunk
+    // of the work before tracking started shows real progress, not 0%.
+    const techActual = preQ3[t] + techWeekActual;
+    const techScope = preQ3[t] + techTarget;
+    const pct = techScope ? Math.round((techActual / techScope) * 100) : 0;
+    const pctColor = techActual >= techScope && techScope ? 'var(--green)' : 'var(--navy)';
     html += '<tr><td>' + escapeHtml(t) + '</td>' +
-      '<td style="text-align:center;color:var(--green);font-weight:bold;">' + alreadyDone[t] + '</td>' +
+      '<td style="text-align:center;color:var(--green);font-weight:bold;">' + preQ3[t] + '</td>' +
       '<td style="text-align:center;font-weight:bold;">' + techTarget + '</td>' + weekCells +
       '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techActual + '</td>' +
-      '<td style="text-align:center;font-weight:bold;">' + pct + '%</td>' +
-      '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td>' +
-      '<td style="text-align:center;font-weight:bold;">' + (alreadyDone[t] + techTarget) + '</td></tr>';
-    totals.alreadyDone += alreadyDone[t]; totals.target += techTarget; totals.actual += techActual; totals.extra += extra[t];
+      '<td style="text-align:center;">' + techScope + '</td>' +
+      '<td style="text-align:center;font-weight:bold;color:' + pctColor + ';">' + pct + '%</td>' +
+      '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td></tr>';
+    totals.preQ3 += preQ3[t]; totals.target += techTarget; totals.actual += techActual; totals.extra += extra[t];
   });
-  const totalPct = totals.target ? Math.round((totals.actual / totals.target) * 100) : 0;
+
+  const totalScope = totals.preQ3 + totals.target;
+  const totalPct = totalScope ? Math.round((totals.actual / totalScope) * 100) : 0;
   html += '<tr style="font-weight:bold;background:var(--light-grey);"><td>TOTAL</td>' +
-    '<td style="text-align:center;">' + totals.alreadyDone + '</td>' +
+    '<td style="text-align:center;">' + totals.preQ3 + '</td>' +
     '<td style="text-align:center;">' + totals.target + '</td>';
   Q3_WEEKS.forEach(w => {
     let wt = 0, wa = 0;
@@ -1013,9 +1016,10 @@ function renderQ3Grid(stats) {
     html += '<td style="text-align:center;">' + wa + '/' + wt +
       (wt ? '<br><span style="color:' + pctColor + ';font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
   });
-  html += '<td style="text-align:center;">' + totals.actual + '</td><td style="text-align:center;">' + totalPct + '%</td>' +
-    '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td>' +
-    '<td style="text-align:center;">' + (totals.alreadyDone + totals.target) + '</td></tr>';
+  html += '<td style="text-align:center;">' + totals.actual + '</td>' +
+    '<td style="text-align:center;">' + totalScope + '</td>' +
+    '<td style="text-align:center;">' + totalPct + '%</td>' +
+    '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td></tr>';
   html += '</tbody>';
   document.getElementById('qGrid').innerHTML = html;
 }
@@ -1179,14 +1183,33 @@ function renderMyAssignments(stats) {
       '<td><span class="badge ' + badgeClass + '">' + badge + '</span></td></tr>';
   }
   sHtml += '</tbody>';
+
+  // ---- Overall progress across all of Q3, including pre-Q3 credit ----
+  // Without this, anyone whose work predates the dashboard shows 0%
+  // even though a chunk of their scope is already finished.
+  let totalTarget = 0, totalWeekActual = 0;
+  Q3_WEEKS.forEach(w => { totalTarget += targetByWeek[w.n] || 0; totalWeekActual += actualByWeek[w.n] || 0; });
+  const overallActual = alreadyDoneCount + totalWeekActual;
+  const overallScope = alreadyDoneCount + totalTarget;
+  const overallPct = overallScope ? Math.round((overallActual / overallScope) * 100) : 0;
+
+  sHtml = sHtml.replace('</tbody>',
+    '<tr style="font-weight:bold;background:var(--light-grey);">' +
+    '<td>All of Q3 (incl. pre-Q3)</td>' +
+    '<td style="text-align:center;">' + overallScope + '</td>' +
+    '<td style="text-align:center;color:var(--green);">' + overallActual + '</td>' +
+    '<td style="text-align:center;">' + Math.max(0, overallScope - overallActual) + '</td>' +
+    '<td style="text-align:center;">' + overallPct + '%</td>' +
+    '<td>' + (alreadyDoneCount ? '<span class="badge compliant">' + alreadyDoneCount + ' pre-Q3 credited</span>' : '') + '</td>' +
+    '</tr></tbody>');
   summaryArea.innerHTML = sHtml;
 
   const capBits = [];
-  if (alreadyDoneCount) capBits.push(alreadyDoneCount + ' already done pre-Q3');
+  if (alreadyDoneCount) capBits.push(alreadyDoneCount + ' already done pre-Q3 (counted above)');
   if (extraCount) capBits.push('+' + extraCount + ' extra credited');
   const capEl = document.getElementById('myAssignmentsCaption');
   if (capEl) {
-    capEl.textContent = 'Any device counts toward your weekly target — pick from the pending pool below.'
+    capEl.textContent = 'Any device counts toward your target — pick from the pending pool below.'
       + (capBits.length ? ' (' + capBits.join(' · ') + ')' : '');
   }
 
