@@ -159,6 +159,28 @@
   </div>
 
   <div class="section">
+    <h2>Manage targets</h2>
+    <div id="adminLockedBox">
+      <p class="sub" style="margin-bottom:8px;">Editing or removing target devices requires the admin code. Technicians don't need this &mdash; uploading reports works without it.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <input type="password" id="adminCodeInput" placeholder="Admin code&hellip;" style="font-family:inherit;font-size:12px;padding:7px 9px;border-radius:6px;border:1px solid var(--border);min-width:180px;">
+        <button class="secondary small" id="adminUnlockBtn">Unlock admin</button>
+      </div>
+    </div>
+    <div id="managePanel" style="display:none;">
+      <p class="sub" style="margin-bottom:8px;">Change a device's owner email, move it to a different technician, or remove it from the targets when someone resigns or hardware is returned. Removed devices stop counting toward everyone's target and percentage, and are listed with who removed them below.</p>
+      <div class="filterbar">
+        <input type="text" id="manageSearch" placeholder="Search email, host, serial, technician&hellip;" style="flex:1; min-width:220px;">
+        <button class="secondary small" id="adminLockBtn">Lock admin</button>
+      </div>
+      <p class="sub" id="manageCount" style="margin:0 0 8px;"></p>
+      <div class="table-wrap"><table id="manageTableArea"></table></div>
+      <h2 style="margin-top:18px;">Removed from targets</h2>
+      <div class="table-wrap"><table id="removedTableArea"></table></div>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Device explorer (RAW Devices)</h2>
     <div class="filterbar">
       <input type="text" id="devSearch" placeholder="Search email, model, identifier&hellip;" style="flex:1; min-width:200px;">
@@ -333,6 +355,21 @@ async function supabaseInsert(base, key, table, row) {
   return { ok: true };
 }
 
+async function supabaseUpdate(base, key, table, id, patch) {
+  const res = await fetch(base + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: supabaseHeaders(key, { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    return { ok: false, error: 'Update failed (HTTP ' + res.status + '). ' + (res.status === 401 || res.status === 403
+      ? 'The database is not allowing updates yet — run supabase_migration_manage_targets.sql in the Supabase SQL editor.'
+      : body.slice(0, 300)) };
+  }
+  return { ok: true };
+}
+
 async function postToServer(url, key, payload) {
   const base = url.replace(/\/+$/, '');
   const machineResult = await supabaseInsert(base, key, 'machines', payload.machine);
@@ -353,6 +390,13 @@ async function postToServer(url, key, payload) {
 // both its historic match (baked into the page) and any Machines
 // rows added this session (by matching Endpoint Serial Number).
 // ---------------------------------------------------------------
+// Rows removed from targets (resigned staff, retired/returned devices)
+// stay in the database for the audit trail but must never count toward
+// anyone's target, actual, or percentage.
+function isRemoved(a) { return a && (a.removed === true || a.removed === 'TRUE' || a.removed === 'true'); }
+function activeAssignments() { return state.q3Assignments.filter(a => !isRemoved(a)); }
+function removedAssignments() { return state.q3Assignments.filter(isRemoved); }
+
 function machinesBySerial() {
   const map = new Map();
   state.machines.forEach(m => {
@@ -540,6 +584,7 @@ function initApp() {
   wireTopbar();
   wireUploader();
   wireDeviceExplorer();
+  wireManageTargets();
 
   if (serverUrl && serverKey) {
     connectToServer(serverUrl, serverKey, true);
@@ -686,12 +731,13 @@ function exportXlsxSnapshot() {
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([rHeader].concat(rRows)), 'RAW Devices');
 
-  const qHeader = ['Technician','Week #','Week Dates','User Email','Device Model','Mac Address','Endpoint Host Name','Endpoint Serial Number','Self-Report By','Validated (auto)'];
+  const qHeader = ['Technician','Week #','Week Dates','User Email','Device Model','Mac Address','Endpoint Host Name','Endpoint Serial Number','Self-Report By','Validated (auto)','Removed','Removed By','Removed At','Remove Reason'];
   const qRows = state.q3Assignments.map(a => {
     const validated = a.endpointSerial && !PLACEHOLDERS.has(String(a.endpointSerial).trim())
       ? (bySerial.has(String(a.endpointSerial).trim()) ? 'Yes' : 'No') : 'Manual Check Needed';
     const sr = selfReports[a.endpointSerial];
-    return [a.tech, a.weekNum, a.weekDates, a.email, a.model, a.mac, a.endpointHost, a.endpointSerial, sr ? sr.uploadedBy : '', validated];
+    return [a.tech, a.weekNum, a.weekDates, a.email, a.model, a.mac, a.endpointHost, a.endpointSerial, sr ? sr.uploadedBy : '', validated,
+      isRemoved(a) ? 'Yes' : '', a.removedBy || '', a.removedAt || '', a.removeReason || ''];
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([qHeader].concat(qRows)), 'Q3 Targets');
 
@@ -829,7 +875,7 @@ async function mergeIntoState(parsed, uploader) {
     if (newRawDevice) {
       showToast('"' + parsed.identifier + '" wasn\'t in the tracked device list — added it to the shared database and credited the extra work to ' + uploader + '.', 'success', 'New machine added');
     } else {
-      const assignments = state.q3Assignments.filter(a => a.endpointSerial && String(a.endpointSerial).trim() === key);
+      const assignments = activeAssignments().filter(a => a.endpointSerial && String(a.endpointSerial).trim() === key);
       assignments.forEach(a => {
         if (a.tech !== uploader) {
           showToast('"' + parsed.identifier + '" is assigned to ' + a.tech + ' but was uploaded by ' + uploader + '.', 'warning', 'Assignment mismatch');
@@ -848,7 +894,7 @@ async function mergeIntoState(parsed, uploader) {
     state.q3Assignments.push(newQ3Row);
     showToast('"' + parsed.identifier + '" wasn\'t in the tracked device list — added it and credited the extra work to ' + uploader + '. (Not connected to a shared database — this is only visible in this browser.)', 'success', 'New machine added');
   } else if (key) {
-    const assignments = state.q3Assignments.filter(a => a.endpointSerial && String(a.endpointSerial).trim() === key);
+    const assignments = activeAssignments().filter(a => a.endpointSerial && String(a.endpointSerial).trim() === key);
     assignments.forEach(a => {
       selfReports[key] = { uploadedBy: uploader, generated: parsed.generated };
       if (a.tech !== uploader) {
@@ -956,7 +1002,7 @@ function renderQ3Grid(stats) {
     Q3_WEEKS.forEach(w => { targetByTechWeek[t][w.n] = 0; actualByTechWeek[t][w.n] = 0; });
   });
 
-  state.q3Assignments.forEach(a => {
+  activeAssignments().forEach(a => {
     if (!targetByTechWeek[a.tech]) return;
     if (a.alreadyDone) { preQ3[a.tech]++; return; }
     if (a.extra) { extra[a.tech]++; return; }
@@ -1142,7 +1188,7 @@ function renderMyAssignments(stats) {
   // number of Q3 rows originally assigned to this tech for a given week
   // is still what sets the target, but they're free to harden ANY
   // device to hit it.
-  const mine = state.q3Assignments.filter(a => a.tech === tech);
+  const mine = activeAssignments().filter(a => a.tech === tech);
   const targetByWeek = {};
   Q3_WEEKS.forEach(w => { targetByWeek[w.n] = 0; });
   let alreadyDoneCount = 0, extraCount = 0;
@@ -1227,7 +1273,7 @@ function renderMyAssignments(stats) {
     // it no longer restricts anything — theirs float to the top as a
     // natural starting point.
     const assigneeBySerial = new Map();
-    state.q3Assignments.forEach(a => {
+    activeAssignments().forEach(a => {
       const k = a.endpointSerial ? String(a.endpointSerial).trim() : '';
       if (k && !assigneeBySerial.has(k)) assigneeBySerial.set(k, a.tech);
     });
@@ -1255,6 +1301,212 @@ function renderMyAssignments(stats) {
   detailArea.innerHTML = dHtml;
 }
 
+// ---------------------------------------------------------------
+// Manage targets — edit device owner, reassign technician, or remove
+// a device from the target list (resigned staff, retired hardware).
+// Gated behind a second admin code so ordinary technicians keep the
+// view/upload flow untouched. Same honest caveat as the main gate:
+// this is client-side, so it's a control against accidents and casual
+// meddling, not against someone determined to bypass it.
+// ---------------------------------------------------------------
+const ADMIN_HASH = '5d7ad183';
+const ADMIN_UNLOCKED_KEY = 'cisAdminUnlocked_v1';
+
+let adminUnlocked = false;
+try { adminUnlocked = localStorage.getItem(ADMIN_UNLOCKED_KEY) === '1'; } catch (e) {}
+
+let manageEditingId = null;
+
+function wireManageTargets() {
+  const unlockBtn = document.getElementById('adminUnlockBtn');
+  const adminInput = document.getElementById('adminCodeInput');
+  const search = document.getElementById('manageSearch');
+  if (!unlockBtn) return;
+
+  const tryUnlock = () => {
+    if (simpleHash(adminInput.value) === ADMIN_HASH) {
+      adminUnlocked = true;
+      try { localStorage.setItem(ADMIN_UNLOCKED_KEY, '1'); } catch (e) {}
+      adminInput.value = '';
+      renderManageTargets();
+      showToast('Admin mode on — you can now edit or remove target rows.', 'success', 'Admin unlocked');
+    } else {
+      showToast('That admin code is not correct.', 'warning', 'Still locked');
+      adminInput.value = '';
+      adminInput.focus();
+    }
+  };
+  unlockBtn.addEventListener('click', tryUnlock);
+  adminInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryUnlock(); });
+
+  const lockBtn = document.getElementById('adminLockBtn');
+  if (lockBtn) lockBtn.addEventListener('click', () => {
+    adminUnlocked = false;
+    manageEditingId = null;
+    try { localStorage.removeItem(ADMIN_UNLOCKED_KEY); } catch (e) {}
+    renderManageTargets();
+    showToast('Admin mode off.', 'info', 'Locked');
+  });
+
+  if (search) search.addEventListener('input', debounce(() => renderManageTargets(), 180));
+}
+
+function renderManageTargets() {
+  const lockedBox = document.getElementById('adminLockedBox');
+  const panel = document.getElementById('managePanel');
+  const area = document.getElementById('manageTableArea');
+  const removedArea = document.getElementById('removedTableArea');
+  if (!panel || !area) return;
+
+  if (lockedBox) lockedBox.style.display = adminUnlocked ? 'none' : '';
+  panel.style.display = adminUnlocked ? '' : 'none';
+  if (!adminUnlocked) { area.innerHTML = ''; if (removedArea) removedArea.innerHTML = ''; return; }
+
+  if (!usingServer) {
+    area.innerHTML = '<p class="empty">Not connected to the shared database — target changes can only be made while connected.</p>';
+    if (removedArea) removedArea.innerHTML = '';
+    return;
+  }
+
+  const q = (document.getElementById('manageSearch').value || '').trim().toLowerCase();
+  let rows = activeAssignments();
+  if (q) {
+    rows = rows.filter(a =>
+      (a.email || '').toLowerCase().includes(q) ||
+      (a.endpointHost || '').toLowerCase().includes(q) ||
+      (a.endpointSerial || '').toLowerCase().includes(q) ||
+      (a.tech || '').toLowerCase().includes(q) ||
+      (a.model || '').toLowerCase().includes(q));
+  }
+  const shown = rows.slice(0, 100);
+
+  let html = '<thead><tr><th>Technician</th><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Serial</th><th style="width:190px;">Actions</th></tr></thead><tbody>';
+  if (shown.length === 0) {
+    html += '<tr><td colspan="7" class="empty">' + (q ? 'No target rows match "' + escapeHtml(q) + '".' : 'No target rows.') + '</td></tr>';
+  } else {
+    shown.forEach(a => {
+      if (String(a.id) === String(manageEditingId)) {
+        const techOpts = TECHS.map(t => '<option' + (t === a.tech ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('');
+        html += '<tr style="background:#EEF3F8;">' +
+          '<td><select id="editTech" style="font-size:11px;padding:3px;max-width:130px;">' + techOpts + '</select></td>' +
+          '<td>' + escapeHtml(a.weekNum) + '</td>' +
+          '<td><input id="editEmail" type="text" value="' + escapeHtml(a.email) + '" style="font-size:11px;padding:3px;width:100%;min-width:150px;"></td>' +
+          '<td>' + escapeHtml(a.model) + '</td>' +
+          '<td>' + escapeHtml(a.endpointHost) + '</td>' +
+          '<td>' + escapeHtml(a.endpointSerial) + '</td>' +
+          '<td><button class="small" data-save="' + escapeHtml(a.id) + '">Save</button> ' +
+          '<button class="secondary small" data-cancel="1">Cancel</button></td></tr>';
+      } else {
+        html += '<tr>' +
+          '<td>' + escapeHtml(a.tech) + '</td>' +
+          '<td>' + escapeHtml(a.weekNum) + '</td>' +
+          '<td>' + escapeHtml(a.email) + '</td>' +
+          '<td>' + escapeHtml(a.model) + '</td>' +
+          '<td>' + escapeHtml(a.endpointHost) + '</td>' +
+          '<td>' + escapeHtml(a.endpointSerial) + '</td>' +
+          '<td><button class="secondary small" data-edit="' + escapeHtml(a.id) + '">Edit</button> ' +
+          '<button class="secondary small" data-remove="' + escapeHtml(a.id) + '" style="color:var(--red);border-color:var(--red);">Remove</button></td></tr>';
+      }
+    });
+  }
+  html += '</tbody>';
+  area.innerHTML = html;
+
+  const totalActive = activeAssignments().length;
+  const countEl = document.getElementById('manageCount');
+  if (countEl) countEl.textContent = shown.length < rows.length
+    ? 'Showing first ' + shown.length + ' of ' + rows.length + ' matching rows (' + totalActive + ' active targets total).'
+    : rows.length + ' row(s) shown (' + totalActive + ' active targets total).';
+
+  area.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
+    manageEditingId = b.getAttribute('data-edit');
+    renderManageTargets();
+  }));
+  area.querySelectorAll('[data-cancel]').forEach(b => b.addEventListener('click', () => {
+    manageEditingId = null;
+    renderManageTargets();
+  }));
+  area.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => saveTargetEdit(b.getAttribute('data-save'))));
+  area.querySelectorAll('[data-remove]').forEach(b => b.addEventListener('click', () => removeTarget(b.getAttribute('data-remove'))));
+
+  // ---- Audit trail of removals ----
+  if (removedArea) {
+    const gone = removedAssignments();
+    if (gone.length === 0) {
+      removedArea.innerHTML = '<p class="empty">No devices have been removed from the target list.</p>';
+    } else {
+      let rHtml = '<thead><tr><th>Technician</th><th>User email</th><th>Endpoint host</th><th>Serial</th><th>Reason</th><th>Removed by</th><th>When</th><th></th></tr></thead><tbody>';
+      gone.slice().reverse().forEach(a => {
+        rHtml += '<tr><td>' + escapeHtml(a.tech) + '</td><td>' + escapeHtml(a.email) + '</td>' +
+          '<td>' + escapeHtml(a.endpointHost) + '</td><td>' + escapeHtml(a.endpointSerial) + '</td>' +
+          '<td>' + escapeHtml(a.removeReason || '—') + '</td>' +
+          '<td>' + escapeHtml(a.removedBy || '—') + '</td>' +
+          '<td class="filename">' + escapeHtml((a.removedAt || '').replace('T', ' ').slice(0, 16)) + '</td>' +
+          '<td><button class="secondary small" data-restore="' + escapeHtml(a.id) + '">Restore</button></td></tr>';
+      });
+      rHtml += '</tbody>';
+      removedArea.innerHTML = rHtml;
+      removedArea.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', () => restoreTarget(b.getAttribute('data-restore'))));
+    }
+  }
+}
+
+function whoAmI() {
+  return document.getElementById('uploaderSelect').value || 'Unknown (name not selected)';
+}
+
+async function applyTargetPatch(id, patch, successMsg) {
+  if (!usingServer || !serverUrl || !serverKey) {
+    showToast('Not connected to the shared database.', 'warning', 'Cannot save');
+    return;
+  }
+  const base = serverUrl.replace(/\/+$/, '');
+  const result = await supabaseUpdate(base, serverKey, 'q3_assignments', id, patch);
+  if (!result.ok) { showToast(result.error, 'error', 'Save failed'); return; }
+  const data = await fetchStateFromServer(serverUrl, serverKey);
+  state = { rawDevices: data.rawDevices, machines: data.machines, q3Assignments: data.q3Assignments };
+  lastFetchedAt = new Date();
+  manageEditingId = null;
+  renderAll();
+  showToast(successMsg, 'success', 'Saved');
+}
+
+function saveTargetEdit(id) {
+  const techSel = document.getElementById('editTech');
+  const emailIn = document.getElementById('editEmail');
+  if (!techSel || !emailIn) return;
+  applyTargetPatch(id, {
+    tech: techSel.value,
+    email: emailIn.value.trim(),
+    updatedBy: whoAmI(),
+    updatedAt: new Date().toISOString(),
+  }, 'Target updated — owner and technician saved for everyone.');
+}
+
+function removeTarget(id) {
+  const row = state.q3Assignments.find(a => String(a.id) === String(id));
+  const label = row ? (row.endpointHost || row.endpointSerial || 'this device') : 'this device';
+  const reason = prompt('Remove "' + label + '" from the target list.\n\nReason (e.g. resigned, device returned, replaced):', '');
+  if (reason === null) return;
+  applyTargetPatch(id, {
+    removed: true,
+    removedBy: whoAmI(),
+    removedAt: new Date().toISOString(),
+    removeReason: reason.trim() || 'No reason given',
+  }, '"' + label + '" removed from targets — it no longer counts toward anyone\'s numbers.');
+}
+
+function restoreTarget(id) {
+  applyTargetPatch(id, {
+    removed: false,
+    removedBy: null,
+    removedAt: null,
+    removeReason: null,
+    updatedBy: whoAmI(),
+    updatedAt: new Date().toISOString(),
+  }, 'Device restored to the target list.');
+}
+
 function renderAll() {
   const stats = computeStats();
   lastStats = stats;
@@ -1276,6 +1528,7 @@ function renderAll() {
   renderQ3Grid(stats);
   renderDeviceTable(stats);
   renderUploadHistory();
+  renderManageTargets();
   lastFingerprint = stateFingerprint(state);
 }
 
