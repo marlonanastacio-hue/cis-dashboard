@@ -114,12 +114,12 @@
       <option>John Allen Reyes</option><option>Paolo Dimayuga</option><option>Rachel Blanca</option>
       <option>Jeffrey Jordan</option><option>Junar Paraoan</option>
     </select>
-    <span class="who-hint">Required before uploading &mdash; also personalizes "My assignments" below and tags reports so they count toward your Q3 weekly target</span>
+    <span class="who-hint">Required before uploading &mdash; also personalizes "My progress" below and credits reports toward your weekly target</span>
   </div>
 
   <div class="section">
-    <h2>My assignments</h2>
-    <p class="sub" id="myAssignmentsEmpty" style="margin-bottom:8px;">Select your name above to see your personal Q3 checklist &mdash; actual vs. target for the current week, and which specific devices are still pending.</p>
+    <h2>My progress</h2>
+    <p class="sub" id="myAssignmentsEmpty" style="margin-bottom:8px;">Select your name above to see your actual vs. target for the current week, plus the pool of devices still pending. Any device counts toward your target &mdash; they are not locked to one person.</p>
     <div class="qgrid-wrap"><table id="myWeeklyTable"></table></div>
     <p class="sub" id="myAssignmentsCaption" style="margin:8px 0 0;"></p>
     <div class="table-wrap" style="margin-top:14px;"><table id="myAssignmentsTable"></table></div>
@@ -154,6 +154,7 @@
 
   <div class="section">
     <h2>Q3 weekly targets (Aug 1 &ndash; Sep 30, 2026)</h2>
+    <p class="sub" style="margin-bottom:8px;">Each week cell shows <strong>actual / target</strong> and the resulting percentage. Actual counts reports a technician uploaded that week on any device.</p>
     <div class="qgrid-wrap"><table id="qGrid"></table></div>
   </div>
 
@@ -937,73 +938,82 @@ function destroyChart(key) { if (charts[key]) { charts[key].destroy(); delete ch
 
 // ---- Q3 grid ----
 function renderQ3Grid(stats) {
-  const byTechWeek = {};
+  // Targets are an open quota now: the assigned rows still SET each
+  // tech's weekly target number, but "actual" counts whatever reports
+  // that tech actually uploaded in that week — on any device, assigned
+  // to them or not.
+  const targetByTechWeek = {};
+  const actualByTechWeek = {};
   const alreadyDone = {};
   const extra = {};
-  const extraByWeek = {}; // tech -> weekNum -> count, so "extra" credit shows under the week it actually happened
   TECHS.forEach(t => {
-    byTechWeek[t] = {};
+    targetByTechWeek[t] = {};
+    actualByTechWeek[t] = {};
     alreadyDone[t] = 0;
     extra[t] = 0;
-    extraByWeek[t] = {};
-    Q3_WEEKS.forEach(w => { byTechWeek[t][w.n] = { target: 0, validated: 0 }; extraByWeek[t][w.n] = 0; });
+    Q3_WEEKS.forEach(w => { targetByTechWeek[t][w.n] = 0; actualByTechWeek[t][w.n] = 0; });
   });
 
   state.q3Assignments.forEach(a => {
-    if (!byTechWeek[a.tech]) return;
+    if (!targetByTechWeek[a.tech]) return;
     if (a.alreadyDone) { alreadyDone[a.tech]++; return; }
     if (a.extra) {
-      // A device that wasn't in the original tracked list, found via an
-      // uploaded report. Still shown in "Extra (unassigned)" so it's
-      // visible as bonus/unplanned work, but it also counts toward
-      // "Already done" credit, attributed to the week it was reported.
+      // Devices found via upload that were never in the tracked list.
+      // Counted in the "Extra (unassigned)" column for visibility; the
+      // work itself already shows up in the weekly actuals below, since
+      // those are derived from uploaded reports.
       extra[a.tech]++;
-      alreadyDone[a.tech]++;
-      if (extraByWeek[a.tech][a.weekNum] !== undefined) extraByWeek[a.tech][a.weekNum]++;
       return;
     }
-    const cell = byTechWeek[a.tech][a.weekNum];
-    if (!cell) return;
-    cell.target++;
-    const key = a.endpointSerial ? String(a.endpointSerial).trim() : '';
-    const validated = key && !PLACEHOLDERS.has(key) && stats.bySerial.has(key);
-    if (validated) cell.validated++;
+    if (targetByTechWeek[a.tech][a.weekNum] !== undefined) targetByTechWeek[a.tech][a.weekNum]++;
   });
 
-  let html = '<thead><tr><th>Technician</th><th>Already done</th><th>New target</th>';
-  Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
-  html += '<th>Validated</th><th>% of new target</th><th>Extra (unassigned)</th><th>Combined total</th></tr></thead><tbody>';
+  state.machines.forEach(m => {
+    if (!m.uploadedBy || !actualByTechWeek[m.uploadedBy]) return;
+    const wn = weekNumberFor(m.generated);
+    if (actualByTechWeek[m.uploadedBy][wn] !== undefined) actualByTechWeek[m.uploadedBy][wn]++;
+  });
 
-  const totals = { alreadyDone: 0, target: 0, validated: 0, extra: 0 };
+  let html = '<thead><tr><th>Technician</th><th>Already done</th><th>Target</th>';
+  Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
+  html += '<th>Actual</th><th>% of target</th><th>Extra (unassigned)</th><th>Combined total</th></tr></thead><tbody>';
+
+  const totals = { alreadyDone: 0, target: 0, actual: 0, extra: 0 };
   TECHS.forEach(t => {
-    let techTarget = 0, techValidated = 0;
+    let techTarget = 0, techActual = 0;
     let weekCells = '';
     Q3_WEEKS.forEach(w => {
-      const c = byTechWeek[t][w.n];
-      techTarget += c.target; techValidated += c.validated;
-      const ex = extraByWeek[t][w.n];
-      weekCells += '<td style="text-align:center;">' + c.target + (c.validated ? ' <span style="color:var(--green);font-weight:bold;">(' + c.validated + ')</span>' : '') + (ex ? ' <span style="color:var(--navy);font-weight:bold;">+' + ex + '</span>' : '') + '</td>';
+      const tgt = targetByTechWeek[t][w.n];
+      const act = actualByTechWeek[t][w.n];
+      techTarget += tgt; techActual += act;
+      const pctW = tgt ? Math.round((act / tgt) * 100) : 0;
+      const pctColor = !tgt ? 'var(--grey)' : (act >= tgt ? 'var(--green)' : 'var(--amber)');
+      weekCells += '<td style="text-align:center;">' + act + '/' + tgt +
+        (tgt ? '<br><span style="color:' + pctColor + ';font-weight:bold;font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
     });
-    const pct = techTarget ? Math.round((techValidated / techTarget) * 100) : 0;
+    const pct = techTarget ? Math.round((techActual / techTarget) * 100) : 0;
     html += '<tr><td>' + escapeHtml(t) + '</td>' +
       '<td style="text-align:center;color:var(--green);font-weight:bold;">' + alreadyDone[t] + '</td>' +
       '<td style="text-align:center;font-weight:bold;">' + techTarget + '</td>' + weekCells +
-      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techValidated + '</td>' +
-      '<td style="text-align:center;">' + pct + '%</td>' +
+      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techActual + '</td>' +
+      '<td style="text-align:center;font-weight:bold;">' + pct + '%</td>' +
       '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td>' +
       '<td style="text-align:center;font-weight:bold;">' + (alreadyDone[t] + techTarget) + '</td></tr>';
-    totals.alreadyDone += alreadyDone[t]; totals.target += techTarget; totals.validated += techValidated; totals.extra += extra[t];
+    totals.alreadyDone += alreadyDone[t]; totals.target += techTarget; totals.actual += techActual; totals.extra += extra[t];
   });
-  const totalPct = totals.target ? Math.round((totals.validated / totals.target) * 100) : 0;
+  const totalPct = totals.target ? Math.round((totals.actual / totals.target) * 100) : 0;
   html += '<tr style="font-weight:bold;background:var(--light-grey);"><td>TOTAL</td>' +
     '<td style="text-align:center;">' + totals.alreadyDone + '</td>' +
     '<td style="text-align:center;">' + totals.target + '</td>';
   Q3_WEEKS.forEach(w => {
-    let wt = 0, wv = 0, we = 0;
-    TECHS.forEach(t => { wt += byTechWeek[t][w.n].target; wv += byTechWeek[t][w.n].validated; we += extraByWeek[t][w.n]; });
-    html += '<td style="text-align:center;">' + wt + (wv ? ' <span style="color:var(--green);">(' + wv + ')</span>' : '') + (we ? ' <span style="color:var(--navy);">+' + we + '</span>' : '') + '</td>';
+    let wt = 0, wa = 0;
+    TECHS.forEach(t => { wt += targetByTechWeek[t][w.n]; wa += actualByTechWeek[t][w.n]; });
+    const pctW = wt ? Math.round((wa / wt) * 100) : 0;
+    const pctColor = !wt ? 'var(--grey)' : (wa >= wt ? 'var(--green)' : 'var(--amber)');
+    html += '<td style="text-align:center;">' + wa + '/' + wt +
+      (wt ? '<br><span style="color:' + pctColor + ';font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
   });
-  html += '<td style="text-align:center;">' + totals.validated + '</td><td style="text-align:center;">' + totalPct + '%</td>' +
+  html += '<td style="text-align:center;">' + totals.actual + '</td><td style="text-align:center;">' + totalPct + '%</td>' +
     '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td>' +
     '<td style="text-align:center;">' + (totals.alreadyDone + totals.target) + '</td></tr>';
   html += '</tbody>';
@@ -1123,75 +1133,99 @@ function renderMyAssignments(stats) {
   }
   if (emptyMsg) emptyMsg.style.display = 'none';
 
+  // ---- Weekly quota (target) ----
+  // Targets are now an open quota, not a fixed list of devices: the
+  // number of Q3 rows originally assigned to this tech for a given week
+  // is still what sets the target, but they're free to harden ANY
+  // device to hit it.
   const mine = state.q3Assignments.filter(a => a.tech === tech);
-  const isValidated = a => {
-    const key = a.endpointSerial ? String(a.endpointSerial).trim() : '';
-    return key && !PLACEHOLDERS.has(key) && stats.bySerial.has(key);
-  };
-
-  // ---- Actual vs target, per week ----
-  const byWeek = {};
-  Q3_WEEKS.forEach(w => { byWeek[w.n] = { target: 0, actual: 0 }; });
+  const targetByWeek = {};
+  Q3_WEEKS.forEach(w => { targetByWeek[w.n] = 0; });
   let alreadyDoneCount = 0, extraCount = 0;
   mine.forEach(a => {
     if (a.alreadyDone) { alreadyDoneCount++; return; }
     if (a.extra) { extraCount++; return; }
-    const cell = byWeek[a.weekNum];
-    if (!cell) return;
-    cell.target++;
-    if (isValidated(a)) cell.actual++;
+    if (targetByWeek[a.weekNum] !== undefined) targetByWeek[a.weekNum]++;
   });
 
-  // Just the current week's actual vs. target, not the full Q3 breakdown —
-  // that's what someone checking this mid-week actually wants to know.
+  // ---- Actual = reports THIS tech uploaded, bucketed by the week the
+  // report was generated, on any device (assigned to them or not). ----
+  const actualByWeek = {};
+  Q3_WEEKS.forEach(w => { actualByWeek[w.n] = 0; });
+  state.machines.forEach(m => {
+    if (m.uploadedBy !== tech) return;
+    const wn = weekNumberFor(m.generated);
+    if (actualByWeek[wn] !== undefined) actualByWeek[wn]++;
+  });
+
   const curWeekNum = currentWeekNum();
   const curWeek = Q3_WEEKS.find(w => w.n === curWeekNum);
-  let sHtml = '<thead><tr><th>Current week</th><th>Target</th><th>Actual</th><th>Remaining</th><th>Status</th></tr></thead><tbody>';
+  let sHtml = '<thead><tr><th>Current week</th><th>Target</th><th>Actual</th><th>Remaining</th><th>%</th><th>Status</th></tr></thead><tbody>';
   if (!curWeek) {
-    sHtml += '<tr><td colspan="5" class="empty">Today\'s date falls outside the Q3 tracking window (Aug 1 \u2013 Sep 30, 2026).</td></tr>';
+    sHtml += '<tr><td colspan="6" class="empty">Today\'s date falls outside the Q3 tracking window (Aug 1 \u2013 Sep 30, 2026).</td></tr>';
   } else {
-    const c = byWeek[curWeek.n];
-    const remaining = Math.max(0, c.target - c.actual);
+    const target = targetByWeek[curWeek.n] || 0;
+    const actual = actualByWeek[curWeek.n] || 0;
+    const remaining = Math.max(0, target - actual);
+    const pct = target ? Math.round((actual / target) * 100) : 0;
     let badge, badgeClass;
-    if (c.target === 0) { badge = 'No target'; badgeClass = 'notfound'; }
-    else if (c.actual >= c.target) { badge = 'Complete'; badgeClass = 'compliant'; }
+    if (target === 0) { badge = 'No target'; badgeClass = 'notfound'; }
+    else if (actual >= target) { badge = 'Complete'; badgeClass = 'compliant'; }
     else { badge = remaining + ' left'; badgeClass = 'attention'; }
-    sHtml += '<tr><td>' + fmtWeekLabel(curWeek) + '</td><td style="text-align:center;">' + c.target + '</td>' +
-      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + c.actual + '</td>' +
+    sHtml += '<tr><td>' + fmtWeekLabel(curWeek) + '</td><td style="text-align:center;">' + target + '</td>' +
+      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + actual + '</td>' +
       '<td style="text-align:center;">' + remaining + '</td>' +
+      '<td style="text-align:center;font-weight:bold;">' + (target ? pct + '%' : '—') + '</td>' +
       '<td><span class="badge ' + badgeClass + '">' + badge + '</span></td></tr>';
   }
   sHtml += '</tbody>';
   summaryArea.innerHTML = sHtml;
-  const capHtml = (alreadyDoneCount || extraCount)
-    ? (alreadyDoneCount ? alreadyDoneCount + ' already done pre-Q3' : '') + (extraCount ? (alreadyDoneCount ? ' · ' : '') + '+' + extraCount + ' extra credited' : '')
-    : '';
+
+  const capBits = [];
+  if (alreadyDoneCount) capBits.push(alreadyDoneCount + ' already done pre-Q3');
+  if (extraCount) capBits.push('+' + extraCount + ' extra credited');
   const capEl = document.getElementById('myAssignmentsCaption');
-  if (capEl) capEl.textContent = capHtml;
+  if (capEl) {
+    capEl.textContent = 'Any device counts toward your weekly target — pick from the pending pool below.'
+      + (capBits.length ? ' (' + capBits.join(' · ') + ')' : '');
+  }
 
-  // ---- Device-level detail list — what to actually go do, soonest first ----
-  const rows = mine.map(a => ({
-    a,
-    weekLabel: a.alreadyDone ? 'Pre-Q3' : (a.extra ? 'Extra' : (Q3_WEEKS.find(w => w.n === a.weekNum) ? fmtWeekLabel(Q3_WEEKS.find(w => w.n === a.weekNum)) : String(a.weekNum || ''))),
-    validated: a.alreadyDone || isValidated(a),
-    sortWeek: a.alreadyDone ? -1 : (a.extra ? 999 : (a.weekNum || 0)),
-  }));
-  rows.sort((x, y) => {
-    if (x.validated !== y.validated) return x.validated ? 1 : -1; // pending work first
-    return x.sortWeek - y.sortWeek;
-  });
+  // ---- Pending pool: every device without a validated report yet,
+  // open to whoever gets to it first. ----
+  const pending = state.rawDevices
+    .map(rd => ({ rd, st: liveDeviceStatus(rd, stats.bySerial) }))
+    .filter(x => x.st.status.indexOf('Done') !== 0);
 
-  let dHtml = '<thead><tr><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Endpoint serial</th><th>Status</th></tr></thead><tbody>';
-  if (rows.length === 0) {
-    dHtml += '<tr><td colspan="6" class="empty">No devices assigned to ' + escapeHtml(tech) + ' yet.</td></tr>';
+  let dHtml = '<thead><tr><th>User email</th><th>Model</th><th>Endpoint host</th><th>Endpoint serial</th><th>Originally assigned</th></tr></thead><tbody>';
+  if (pending.length === 0) {
+    dHtml += '<tr><td colspan="5" class="empty">Nothing pending — every tracked device has a validated CIS report.</td></tr>';
   } else {
-    rows.forEach(r => {
-      const badgeClass = r.validated ? 'compliant' : 'attention';
-      const badgeText = r.validated ? 'Done' : 'Pending';
-      const email = r.a.email && r.a.email !== '(new machine)' ? r.a.email : '—';
-      dHtml += '<tr><td>' + escapeHtml(r.weekLabel) + '</td><td>' + escapeHtml(email) + '</td><td>' + escapeHtml(r.a.model) + '</td>' +
-        '<td>' + escapeHtml(r.a.endpointHost) + '</td><td>' + escapeHtml(r.a.endpointSerial) + '</td>' +
-        '<td><span class="badge ' + badgeClass + '">' + badgeText + '</span></td></tr>';
+    // Who it was originally assigned to is still shown as context, but
+    // it no longer restricts anything — theirs float to the top as a
+    // natural starting point.
+    const assigneeBySerial = new Map();
+    state.q3Assignments.forEach(a => {
+      const k = a.endpointSerial ? String(a.endpointSerial).trim() : '';
+      if (k && !assigneeBySerial.has(k)) assigneeBySerial.set(k, a.tech);
+    });
+    const withAssignee = pending.map(x => {
+      const k = x.rd.endpointSerial ? String(x.rd.endpointSerial).trim() : '';
+      return { rd: x.rd, assignee: (k && assigneeBySerial.get(k)) || '' };
+    });
+    withAssignee.sort((a, b) => {
+      const aMine = a.assignee === tech ? 0 : 1;
+      const bMine = b.assignee === tech ? 0 : 1;
+      if (aMine !== bMine) return aMine - bMine;
+      return String(a.rd.endpointHost || '').localeCompare(String(b.rd.endpointHost || ''));
+    });
+    withAssignee.slice(0, 300).forEach(x => {
+      const email = x.rd.email && x.rd.email !== '(new machine)' ? x.rd.email : '—';
+      const mineTag = x.assignee === tech
+        ? '<span class="badge compliant">You</span>'
+        : escapeHtml(x.assignee || '—');
+      dHtml += '<tr><td>' + escapeHtml(email) + '</td><td>' + escapeHtml(x.rd.model) + '</td>' +
+        '<td>' + escapeHtml(x.rd.endpointHost) + '</td><td>' + escapeHtml(x.rd.endpointSerial) + '</td>' +
+        '<td>' + mineTag + '</td></tr>';
     });
   }
   dHtml += '</tbody>';
