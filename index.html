@@ -79,6 +79,11 @@
   .gate-card button { width: 100%; }
   .gate-error { color: var(--red); font-size: 11.5px; min-height: 16px; margin: 6px 0 0; }
   .gate-hidden { display: none !important; }
+  .report-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 1500; padding: 24px; }
+  .report-card { background: #fff; border-radius: 10px; width: 100%; max-width: 900px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,.3); }
+  .report-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .report-head h3 { margin: 0; font-size: 14px; color: var(--navy); flex: 1; word-break: break-all; }
+  .report-body { margin: 0; padding: 14px 16px; overflow: auto; font-family: Consolas, "Courier New", monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
 </style>
 </head>
 <body>
@@ -103,6 +108,7 @@
       <button class="secondary small" id="connectBtn">Connect</button>
       <button class="secondary small" id="refreshBtn">Refresh now</button>
       <button class="secondary small" id="exportJsonBtn">Export data (.json)</button>
+      <button class="secondary small" id="completionReportBtn">Completion report</button>
       <button class="secondary small" id="exportXlsxBtn">Export Excel snapshot</button>
     </div>
   </div>
@@ -191,6 +197,17 @@
       </select>
     </div>
     <div class="table-wrap"><table id="devTable"></table></div>
+  </div>
+</div>
+
+<div class="report-overlay" id="reportOverlay">
+  <div class="report-card">
+    <div class="report-head">
+      <h3 id="reportTitle">Report</h3>
+      <button class="secondary small" id="reportDownload">Download .txt</button>
+      <button class="secondary small" id="reportClose">Close</button>
+    </div>
+    <pre class="report-body" id="reportBody"></pre>
   </div>
 </div>
 
@@ -317,26 +334,54 @@ function supabaseHeaders(key, extra) {
   }, extra || {});
 }
 
+// Every column EXCEPT reportText. Full report bodies are ~16 KB each,
+// so pulling them on every 30-second poll would mean tens of megabytes
+// of traffic for data nobody is looking at. They're fetched one at a
+// time, on demand, when someone actually clicks "View".
+const MACHINE_COLUMNS = 'id,site,identifier,status,computer,pass,fail,skip,generated,serial,file,failDetails,uploadedBy,weekNum';
+
 async function fetchStateFromServer(url, key) {
   const base = url.replace(/\/+$/, '');
   const [rawDevices, machines, q3Assignments] = await Promise.all([
     supabaseSelect(base, key, 'raw_devices'),
-    supabaseSelect(base, key, 'machines'),
+    supabaseSelect(base, key, 'machines', MACHINE_COLUMNS),
     supabaseSelect(base, key, 'q3_assignments'),
   ]);
   return { rawDevices, machines, q3Assignments };
 }
 
-async function supabaseSelect(base, key, table) {
-  const res = await fetch(base + '/rest/v1/' + table + '?select=*', {
+async function supabaseSelect(base, key, table, columns) {
+  const res = await fetch(base + '/rest/v1/' + table + '?select=' + encodeURIComponent(columns || '*'), {
     method: 'GET',
     headers: supabaseHeaders(key),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
+    // A missing reportText column means the migration hasn't been run;
+    // fall back to * so the dashboard keeps working either way.
+    if (columns && (res.status === 400 || res.status === 404)) {
+      return supabaseSelect(base, key, table, null);
+    }
     throw new Error('Could not read "' + table + '" (HTTP ' + res.status + '). Check the Project URL and anon key are correct, and that supabase_setup.sql was run. ' + body.slice(0, 200));
   }
   return res.json();
+}
+
+// Fetch one report's full text on demand, by machines.id.
+async function fetchReportText(base, key, id) {
+  const res = await fetch(base + '/rest/v1/machines?id=eq.' + encodeURIComponent(id) + '&select=reportText,file,identifier', {
+    method: 'GET',
+    headers: supabaseHeaders(key),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    if (res.status === 400 || res.status === 404) {
+      throw new Error('The database has no reportText column yet - run supabase_migration_report_text.sql in the Supabase SQL editor.');
+    }
+    throw new Error('Could not load the report (HTTP ' + res.status + '). ' + body.slice(0, 200));
+  }
+  const rows = await res.json();
+  return rows && rows.length ? rows[0] : null;
 }
 
 async function supabaseInsert(base, key, table, row) {
@@ -496,6 +541,10 @@ function parseReport(text, filename) {
   return {
     site, identifier, status, computer, pass: pass || '', fail: fail || '', skip: skip || '',
     generated, serial, file: filename, failDetails: failLines.join(' ;; '), parsedOk,
+    // Keep the untouched original so it can be stored as evidence. The
+    // parsed fields above are a summary; auditors and the SOC will want
+    // the actual report the script produced.
+    reportText: text,
   };
 }
 
@@ -585,6 +634,7 @@ function initApp() {
   wireUploader();
   wireDeviceExplorer();
   wireManageTargets();
+  wireReportViewer();
 
   if (serverUrl && serverKey) {
     connectToServer(serverUrl, serverKey, true);
@@ -686,6 +736,7 @@ function wireTopbar() {
   });
 
   document.getElementById('exportXlsxBtn').addEventListener('click', exportXlsxSnapshot);
+  document.getElementById('completionReportBtn').addEventListener('click', exportCompletionReport);
 
   const urlInput = document.getElementById('sheetUrlInput');
   const keyInput = document.getElementById('sheetKeyInput');
@@ -714,6 +765,118 @@ function wireTopbar() {
       showToast('Refresh failed: ' + err.message, 'error', 'Refresh failed');
     }
   });
+}
+
+// ---------------------------------------------------------------
+// Completion report - who is finished with hardening and who is not.
+// Built from live data every time it is clicked, so it is always
+// current rather than a snapshot someone saved weeks ago.
+// ---------------------------------------------------------------
+function exportCompletionReport() {
+  if (typeof XLSX === 'undefined') {
+    showToast('The spreadsheet library did not load (offline?). Reconnect and try again.', 'error', 'Export unavailable');
+    return;
+  }
+  const bySerial = machinesBySerial();
+
+  // Who the device was assigned to, and whether it was pre-Q3 credit.
+  const assignBySerial = new Map();
+  (typeof activeAssignments === 'function' ? activeAssignments() : state.q3Assignments).forEach(a => {
+    const k = a.endpointSerial ? String(a.endpointSerial).trim() : '';
+    if (k && !assignBySerial.has(k)) assignBySerial.set(k, a);
+  });
+
+  const done = [];
+  const pending = [];
+
+  state.rawDevices.forEach(rd => {
+    const st = liveDeviceStatus(rd, bySerial);
+    const key = rd.endpointSerial ? String(rd.endpointSerial).trim() : '';
+    const assign = key ? assignBySerial.get(key) : null;
+
+    // Most recent matching report gives us when and by whom.
+    let report = null;
+    if (key && bySerial.has(key)) {
+      const hits = bySerial.get(key).slice();
+      hits.sort((a, b) => String(b.generated || '').localeCompare(String(a.generated || '')));
+      report = hits[0];
+    }
+
+    if (st.status.indexOf('Done') === 0) {
+      done.push([
+        rd.email || '', rd.endpointHost || '', rd.endpointSerial || '', rd.model || '',
+        st.status,
+        report ? (report.generated || '') : '',
+        report ? (report.uploadedBy || 'Pre-Q3 / baseline') : 'Pre-Q3 / baseline',
+        report ? (report.pass || '') : '',
+        report ? (report.fail || '') : '',
+        assign ? assign.tech : '',
+      ]);
+    } else {
+      pending.push([
+        rd.email || '', rd.endpointHost || '', rd.endpointSerial || '', rd.model || '',
+        assign ? assign.tech : '(unassigned)',
+        assign ? assign.weekNum : '',
+        (rd.endpointHost && !PLACEHOLDERS.has(String(rd.endpointHost).trim())) ? 'Yes' : 'No',
+      ]);
+    }
+  });
+
+  const total = state.rawDevices.length;
+  const pct = total ? Math.round((done.length / total) * 100) : 0;
+  const compliant = done.filter(r => r[4] === 'Done - Compliant').length;
+  const attention = done.filter(r => r[4].indexOf('Needs Attention') >= 0).length;
+
+  const wb = XLSX.utils.book_new();
+
+  // --- Summary ---
+  const summary = [
+    ['CIS Hardening Completion Report'],
+    ['Generated', new Date().toLocaleString()],
+    [],
+    ['Total devices tracked', total],
+    ['Finished (hardening report on file)', done.length],
+    ['Not yet finished', pending.length],
+    ['Percent complete', pct + '%'],
+    [],
+    ['Of those finished:'],
+    ['  Compliant (no failed checks)', compliant],
+    ['  Done but needs attention (has failures)', attention],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+
+  // --- Finished ---
+  const doneHeader = ['User Email', 'Endpoint Host', 'Serial', 'Model', 'Result',
+                      'Date Hardened', 'Hardened By', 'Pass', 'Fail', 'Assigned To'];
+  done.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([doneHeader].concat(done)), 'Finished');
+
+  // --- Not finished ---
+  const pendHeader = ['User Email', 'Endpoint Host', 'Serial', 'Model',
+                      'Assigned To', 'Target Week', 'Reachable (has hostname)'];
+  pending.sort((a, b) => String(a[4]).localeCompare(String(b[4])) || String(a[0]).localeCompare(String(b[0])));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([pendHeader].concat(pending)), 'Not Finished');
+
+  // --- By technician ---
+  const techHeader = ['Technician', 'Pre-Q3 Done', 'Q3 Target', 'Uploaded This Q3',
+                      'Total Actual', 'Total Scope', 'Percent Complete'];
+  const techRows = TECHS.map(t => {
+    let preQ3 = 0, target = 0;
+    (typeof activeAssignments === 'function' ? activeAssignments() : state.q3Assignments).forEach(a => {
+      if (a.tech !== t) return;
+      if (a.alreadyDone) { preQ3++; return; }
+      if (a.extra) return;
+      target++;
+    });
+    const uploaded = state.machines.filter(m => m.uploadedBy === t).length;
+    const actual = preQ3 + uploaded;
+    const scope = preQ3 + target;
+    return [t, preQ3, target, uploaded, actual, scope, (scope ? Math.round((actual / scope) * 100) : 0) + '%'];
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([techHeader].concat(techRows)), 'By Technician');
+
+  XLSX.writeFile(wb, 'CIS_Completion_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  showToast(done.length + ' finished, ' + pending.length + ' still pending (' + pct + '% complete).', 'success', 'Completion report exported');
 }
 
 function exportXlsxSnapshot() {
@@ -831,6 +994,7 @@ async function mergeIntoState(parsed, uploader) {
     pass: parsed.pass, fail: parsed.fail, skip: parsed.skip, generated: parsed.generated,
     serial: parsed.serial, file: parsed.file, failDetails: parsed.failDetails,
     uploadedBy: uploader, weekNum: parsed.weekNum,
+    reportText: parsed.reportText || null,
   };
 
   const key = parsed.serial ? String(parsed.serial).trim() : '';
@@ -1154,14 +1318,85 @@ function renderUploadHistory() {
   }
   const recent = uploaded.slice(-25).reverse();
   const badgeClass = s => s === 'Compliant' ? 'compliant' : (s === 'Needs Attention' ? 'attention' : (s === 'Corrupted - Needs Re-run' ? 'corrupted' : 'notfound'));
-  let html = '<thead><tr><th>Generated</th><th>Uploaded by</th><th>Site</th><th>Identifier</th><th>Status</th><th>Pass</th><th>Fail</th><th>File</th></tr></thead><tbody>';
+  let html = '<thead><tr><th>Generated</th><th>Uploaded by</th><th>Site</th><th>Identifier</th><th>Status</th><th>Pass</th><th>Fail</th><th>File</th><th>Report</th></tr></thead><tbody>';
   recent.forEach(m => {
+    const viewCell = (usingServer && m.id)
+      ? '<button class="secondary small" data-viewreport="' + escapeHtml(m.id) + '">View</button>'
+      : '<span class="filename">n/a</span>';
     html += '<tr><td>' + escapeHtml(m.generated) + '</td><td>' + escapeHtml(m.uploadedBy) + '</td><td>' + escapeHtml(m.site) + '</td><td>' + escapeHtml(m.identifier) + '</td>' +
       '<td><span class="badge ' + badgeClass(m.status) + '">' + escapeHtml(m.status) + '</span></td><td>' + escapeHtml(m.pass) + '</td><td>' + escapeHtml(m.fail) + '</td>' +
-      '<td class="filename">' + escapeHtml(m.file) + '</td></tr>';
+      '<td class="filename">' + escapeHtml(m.file) + '</td><td>' + viewCell + '</td></tr>';
   });
   html += '</tbody>';
   area.innerHTML = html;
+
+  area.querySelectorAll('[data-viewreport]').forEach(b =>
+    b.addEventListener('click', () => openReport(b.getAttribute('data-viewreport'))));
+}
+
+// ---- Full report viewer ----
+// The report body is NOT held in memory with the rest of the state -
+// it's pulled from the database only when someone asks for it, so the
+// 30-second refresh stays small.
+let currentReport = null;
+
+async function openReport(id) {
+  const overlay  = document.getElementById('reportOverlay');
+  const titleEl  = document.getElementById('reportTitle');
+  const bodyEl   = document.getElementById('reportBody');
+  if (!overlay) return;
+
+  overlay.style.display = 'flex';
+  titleEl.textContent = 'Loading report...';
+  bodyEl.textContent = '';
+  currentReport = null;
+
+  if (!usingServer || !serverUrl || !serverKey) {
+    bodyEl.textContent = 'Not connected to the shared database.';
+    titleEl.textContent = 'Unavailable';
+    return;
+  }
+  try {
+    const base = serverUrl.replace(/\/+$/, '');
+    const row = await fetchReportText(base, serverKey, id);
+    if (!row) {
+      titleEl.textContent = 'Not found';
+      bodyEl.textContent = 'No report row with that id.';
+      return;
+    }
+    titleEl.textContent = row.file || row.identifier || 'Report';
+    if (row.reportText) {
+      bodyEl.textContent = row.reportText;
+      currentReport = { name: row.file || ((row.identifier || 'report') + '.txt'), text: row.reportText };
+    } else {
+      bodyEl.textContent =
+        'No stored text for this report.\n\n' +
+        'Reports uploaded before the reportText migration was applied only have their\n' +
+        'parsed summary saved - the original file was not kept. Everything uploaded\n' +
+        'from now on will store its full text here.';
+    }
+  } catch (err) {
+    titleEl.textContent = 'Error';
+    bodyEl.textContent = err.message;
+  }
+}
+
+function wireReportViewer() {
+  const overlay = document.getElementById('reportOverlay');
+  if (!overlay) return;
+  const close = () => { overlay.style.display = 'none'; currentReport = null; };
+  document.getElementById('reportClose').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && overlay.style.display === 'flex') close(); });
+
+  document.getElementById('reportDownload').addEventListener('click', () => {
+    if (!currentReport) { showToast('Nothing to download yet.', 'warning', 'No report loaded'); return; }
+    const blob = new Blob([currentReport.text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = currentReport.name;
+    a.click();
+  });
 }
 
 // ---- Personal "My Assignments" view ----
