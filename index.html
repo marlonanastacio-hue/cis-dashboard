@@ -442,6 +442,14 @@ function isRemoved(a) { return a && (a.removed === true || a.removed === 'TRUE' 
 function activeAssignments() { return state.q3Assignments.filter(a => !isRemoved(a)); }
 function removedAssignments() { return state.q3Assignments.filter(isRemoved); }
 
+// Inventory rows can be removed too (service/shared mailboxes that are
+// not real assignable end-user devices). Without this, the device-level
+// counters - "Raw devices tracked", "Not yet compliant", "Actionable",
+// the explorer, the pending pool, the completion report - keep counting
+// devices that were deliberately taken out of scope.
+function activeRawDevices() { return state.rawDevices.filter(rd => !isRemoved(rd)); }
+function removedRawDevices() { return state.rawDevices.filter(isRemoved); }
+
 function machinesBySerial() {
   const map = new Map();
   state.machines.forEach(m => {
@@ -479,7 +487,9 @@ function computeStats() {
 
   let done = 0, notFound = 0, actionable = 0;
   const coverage = { 'Done - Compliant': 0, 'Done - Needs Attention': 0, 'Done - Report Corrupted (Manual Match)': 0, 'Not Found': 0 };
-  state.rawDevices.forEach(rd => {
+  // Inventory rows taken out of scope must not inflate the denominator.
+  const activeDevices = activeRawDevices();
+  activeDevices.forEach(rd => {
     const { status } = liveDeviceStatus(rd, bySerial);
     if (status.indexOf('Done') === 0) {
       done++;
@@ -494,8 +504,9 @@ function computeStats() {
 
   return {
     reportArchive: machines.length, compliant, needsAttention, corrupted,
-    rawDevicesTracked: state.rawDevices.length, rawTaggedDone: done, notYetCompliant: notFound,
+    rawDevicesTracked: activeDevices.length, rawTaggedDone: done, notYetCompliant: notFound,
     actionable, coverage, bySerial,
+    removedDevices: state.rawDevices.length - activeDevices.length,
   };
 }
 
@@ -789,7 +800,7 @@ function exportCompletionReport() {
   const done = [];
   const pending = [];
 
-  state.rawDevices.forEach(rd => {
+  activeRawDevices().forEach(rd => {
     const st = liveDeviceStatus(rd, bySerial);
     const key = rd.endpointSerial ? String(rd.endpointSerial).trim() : '';
     const assign = key ? assignBySerial.get(key) : null;
@@ -822,8 +833,9 @@ function exportCompletionReport() {
     }
   });
 
-  const total = state.rawDevices.length;
+  const total = done.length + pending.length;
   const pct = total ? Math.round((done.length / total) * 100) : 0;
+  const excluded = state.rawDevices.length - total;
   const compliant = done.filter(r => r[4] === 'Done - Compliant').length;
   const attention = done.filter(r => r[4].indexOf('Needs Attention') >= 0).length;
 
@@ -834,10 +846,11 @@ function exportCompletionReport() {
     ['CIS Hardening Completion Report'],
     ['Generated', new Date().toLocaleString()],
     [],
-    ['Total devices tracked', total],
+    ['Devices in scope', total],
     ['Finished (hardening report on file)', done.length],
     ['Not yet finished', pending.length],
     ['Percent complete', pct + '%'],
+    ['Excluded from scope (service/shared accounts, retired)', excluded],
     [],
     ['Of those finished:'],
     ['  Compliant (no failed checks)', compliant],
@@ -887,10 +900,13 @@ function exportXlsxSnapshot() {
   const mRows = state.machines.map(m => [m.site,m.identifier,m.status,m.computer,m.pass,m.fail,m.skip,m.generated,m.serial,m.file,m.failDetails,m.uploadedBy||'']);
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([mHeader].concat(mRows)), 'Machines');
 
-  const rHeader = ['Email','Mac Address','Device Model','Company Name','CIS Hardening Status (live)','Endpoint Host Name','Endpoint Serial Number'];
+  // Raw snapshot keeps ALL rows including removed ones, with a flag -
+  // it is the full backup, not the in-scope reporting view.
+  const rHeader = ['Email','Mac Address','Device Model','Company Name','CIS Hardening Status (live)','Endpoint Host Name','Endpoint Serial Number','Removed From Scope','Removed Reason'];
   const rRows = state.rawDevices.map(rd => {
     const st = liveDeviceStatus(rd, bySerial).status;
-    return [rd.email, rd.mac, rd.model, rd.company, st, rd.endpointHost, rd.endpointSerial];
+    return [rd.email, rd.mac, rd.model, rd.company, st, rd.endpointHost, rd.endpointSerial,
+            isRemoved(rd) ? 'Yes' : '', rd.removeReason || ''];
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([rHeader].concat(rRows)), 'RAW Devices');
 
@@ -1264,7 +1280,7 @@ function renderDeviceTable(stats) {
   const statusFilter = document.getElementById('devStatusFilter').value;
   const badgeClass = s => s.indexOf('Compliant') >= 0 ? 'compliant' : (s.indexOf('Needs Attention') >= 0 ? 'attention' : (s.indexOf('Corrupted') >= 0 ? 'corrupted' : 'notfound'));
 
-  let rows = state.rawDevices.map(rd => {
+  let rows = activeRawDevices().map(rd => {
     const st = liveDeviceStatus(rd, stats.bySerial);
     return { rd, status: st.status, live: st.live };
   });
@@ -1290,7 +1306,8 @@ function renderDeviceTable(stats) {
 // ---- Status line + master render ----
 function renderStatusLine(stats) {
   const uploadedCount = state.machines.filter(m => m.uploadedBy).length;
-  const base = stats.rawDevicesTracked + ' devices tracked · ' + stats.reportArchive + ' machine reports (' + uploadedCount + ' with an uploader on record)';
+  const excludedNote = stats.removedDevices ? ' (' + stats.removedDevices + ' excluded from scope)' : '';
+  const base = stats.rawDevicesTracked + ' devices tracked' + excludedNote + ' · ' + stats.reportArchive + ' machine reports (' + uploadedCount + ' with an uploader on record)';
   let connLabel;
   if (usingServer) {
     const t = lastFetchedAt ? lastFetchedAt.toLocaleTimeString() : '';
@@ -1496,7 +1513,7 @@ function renderMyAssignments(stats) {
 
   // ---- Pending pool: every device without a validated report yet,
   // open to whoever gets to it first. ----
-  const pending = state.rawDevices
+  const pending = activeRawDevices()
     .map(rd => ({ rd, st: liveDeviceStatus(rd, stats.bySerial) }))
     .filter(x => x.st.status.indexOf('Done') !== 0);
 
