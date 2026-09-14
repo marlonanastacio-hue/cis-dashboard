@@ -193,6 +193,9 @@
       <select id="devStatusFilter">
         <option value="">All statuses</option>
         <option value="Done">Done (any)</option>
+        <option value="Done - Compliant">Done - compliant</option>
+        <option value="Done - Needs Attention">Done - needs attention</option>
+        <option value="Done - Report Unreadable">Done - report unreadable (re-collect)</option>
         <option value="Not Found in Hardening Reports">Not found</option>
       </select>
     </div>
@@ -470,6 +473,14 @@ function liveDeviceStatus(rd, bySerial) {
     const hits = bySerial.get(String(rd.endpointSerial).trim());
     if (hits && hits.length) {
       const m = hits[0];
+      // A report that could not be parsed still proves the machine was
+      // hardened, so it counts as done - but it is NOT reported as
+      // "Compliant", because nobody can read whether the checks passed.
+      // Calling it compliant would put an unverifiable claim in front of
+      // an auditor.
+      if (m.status === 'Done - Report Unreadable' || m.status === 'Corrupted - Needs Re-run') {
+        return { status: 'Done - Report Unreadable', live: true };
+      }
       const fail = parseInt(m.fail, 10) || 0;
       const derived = fail > 0 ? 'Done - Needs Attention' : 'Done - Compliant';
       return { status: derived, live: true };
@@ -483,10 +494,14 @@ function computeStats() {
   const machines = state.machines;
   const compliant = machines.filter(m => m.status === 'Compliant').length;
   const needsAttention = machines.filter(m => m.status === 'Needs Attention').length;
+  // Still-unparsed reports awaiting a re-run, vs ones deliberately
+  // accepted as done-but-unreadable. Kept separate so "needs re-run"
+  // never quietly includes work that has already been signed off.
   const corrupted = machines.filter(m => m.status === 'Corrupted - Needs Re-run').length;
+  const unreadableDone = machines.filter(m => m.status === 'Done - Report Unreadable').length;
 
   let done = 0, notFound = 0, actionable = 0;
-  const coverage = { 'Done - Compliant': 0, 'Done - Needs Attention': 0, 'Done - Report Corrupted (Manual Match)': 0, 'Not Found': 0 };
+  const coverage = { 'Done - Compliant': 0, 'Done - Needs Attention': 0, 'Done - Report Unreadable': 0, 'Not Found': 0 };
   // Inventory rows taken out of scope must not inflate the denominator.
   const activeDevices = activeRawDevices();
   activeDevices.forEach(rd => {
@@ -503,7 +518,7 @@ function computeStats() {
   });
 
   return {
-    reportArchive: machines.length, compliant, needsAttention, corrupted,
+    reportArchive: machines.length, compliant, needsAttention, corrupted, unreadableDone,
     rawDevicesTracked: activeDevices.length, rawTaggedDone: done, notYetCompliant: notFound,
     actionable, coverage, bySerial,
     removedDevices: state.rawDevices.length - activeDevices.length,
@@ -1105,6 +1120,7 @@ function renderCards(stats) {
     ['Compliant', stats.compliant, 'Machines sheet', 'v-green'],
     ['Needs attention', stats.needsAttention, 'Machines sheet', 'v-amber'],
     ['Corrupted files', stats.corrupted, 'unreadable, needs re-run', 'v-red'],
+    ['Done, unreadable', stats.unreadableDone || 0, 'counted done; re-collect report', 'v-amber'],
     ['Raw devices tracked', stats.rawDevicesTracked, 'endpoint inventory rows', 'v-navy'],
     ['CIS compliance done', stats.rawTaggedDone, 'devices flagged Done', 'v-green'],
     ['Not yet compliant', stats.notYetCompliant, 'no CIS-Done match yet', 'v-red'],
@@ -1189,44 +1205,76 @@ function renderQ3Grid(stats) {
     if (targetByTechWeek[a.tech][a.weekNum] !== undefined) targetByTechWeek[a.tech][a.weekNum]++;
   });
 
+  // Count EVERY upload, then separately work out which ones can be
+  // placed in a Q3 week.
+  //
+  // This is the bug that made Junar show 84 when he had uploaded 90+:
+  // a report whose "Generated" line is missing or unparseable (every
+  // corrupted report, for instance) produces no week number, so the
+  // old code dropped it from the week bucket - and because the total
+  // was built by summing those buckets, it vanished from the total and
+  // the percentage too. The work was done and the report is in the
+  // database, but nothing on screen credited it.
+  //
+  // Now the total counts all of a technician's uploads, and anything
+  // that could not be dated is shown in its own column instead of
+  // disappearing.
+  const uploadsTotal = {};
+  const uploadsUndated = {};
+  TECHS.forEach(t => { uploadsTotal[t] = 0; uploadsUndated[t] = 0; });
+
   state.machines.forEach(m => {
     if (!m.uploadedBy || !actualByTechWeek[m.uploadedBy]) return;
+    uploadsTotal[m.uploadedBy]++;
     const wn = weekNumberFor(m.generated);
-    if (actualByTechWeek[m.uploadedBy][wn] !== undefined) actualByTechWeek[m.uploadedBy][wn]++;
+    if (actualByTechWeek[m.uploadedBy][wn] !== undefined) {
+      actualByTechWeek[m.uploadedBy][wn]++;
+    } else {
+      uploadsUndated[m.uploadedBy]++;   // no date, or dated outside Aug 1 - Sep 30
+    }
   });
 
   let html = '<thead><tr><th>Technician</th><th>Pre-Q3 done</th><th>Q3 target</th>';
   Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
-  html += '<th>Total actual</th><th>Total scope</th><th>% complete</th><th>Extra (unassigned)</th></tr></thead><tbody>';
+  html += '<th>Undated</th><th>Total actual</th><th>Total scope</th><th>% complete</th><th>Extra (unassigned)</th></tr></thead><tbody>';
 
-  const totals = { preQ3: 0, target: 0, actual: 0, extra: 0 };
+  const totals = { preQ3: 0, target: 0, actual: 0, extra: 0, undated: 0 };
   TECHS.forEach(t => {
-    let techTarget = 0, techWeekActual = 0;
+    let techTarget = 0;
     let weekCells = '';
     Q3_WEEKS.forEach(w => {
       const tgt = targetByTechWeek[t][w.n];
       const act = actualByTechWeek[t][w.n];
-      techTarget += tgt; techWeekActual += act;
-      const pctW = tgt ? Math.round((act / tgt) * 100) : 0;
+      techTarget += tgt;
+      // A week can exceed its quota (someone catching up), so cap the
+      // displayed percentage at 100% - the raw count is right there
+      // beside it, and a 200% cell just reads as a formatting error.
+      const pctW = tgt ? Math.min(100, Math.round((act / tgt) * 100)) : 0;
+      const over  = tgt && act > tgt ? ' +' + (act - tgt) : '';
       const pctColor = !tgt ? 'var(--grey)' : (act >= tgt ? 'var(--green)' : 'var(--amber)');
       weekCells += '<td style="text-align:center;">' + act + '/' + tgt +
-        (tgt ? '<br><span style="color:' + pctColor + ';font-weight:bold;font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
+        (tgt ? '<br><span style="color:' + pctColor + ';font-weight:bold;font-size:10px;">' + pctW + '%' + over + '</span>' : '') + '</td>';
     });
-    // Total actual and % are measured against the tech's FULL scope
-    // (pre-Q3 credit + remaining Q3 target), so someone who did a chunk
-    // of the work before tracking started shows real progress, not 0%.
-    const techActual = preQ3[t] + techWeekActual;
+    // Total actual counts ALL of this person's uploads - including any
+    // that could not be dated into a week - plus their pre-Q3 credit.
+    // Measured against their full scope (pre-Q3 + remaining target).
+    const techActual = preQ3[t] + uploadsTotal[t];
     const techScope = preQ3[t] + techTarget;
-    const pct = techScope ? Math.round((techActual / techScope) * 100) : 0;
+    const pct = techScope ? Math.min(100, Math.round((techActual / techScope) * 100)) : 0;
     const pctColor = techActual >= techScope && techScope ? 'var(--green)' : 'var(--navy)';
+    const undatedCell = uploadsUndated[t]
+      ? '<span style="color:var(--red);font-weight:bold;" title="Uploaded but the report had no readable Generated date, or it fell outside Aug 1 - Sep 30. Counted in Total actual, but cannot be placed in a week.">' + uploadsUndated[t] + '</span>'
+      : '0';
     html += '<tr><td>' + escapeHtml(t) + '</td>' +
       '<td style="text-align:center;color:var(--green);font-weight:bold;">' + preQ3[t] + '</td>' +
       '<td style="text-align:center;font-weight:bold;">' + techTarget + '</td>' + weekCells +
+      '<td style="text-align:center;">' + undatedCell + '</td>' +
       '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techActual + '</td>' +
       '<td style="text-align:center;">' + techScope + '</td>' +
       '<td style="text-align:center;font-weight:bold;color:' + pctColor + ';">' + pct + '%</td>' +
       '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td></tr>';
-    totals.preQ3 += preQ3[t]; totals.target += techTarget; totals.actual += techActual; totals.extra += extra[t];
+    totals.preQ3 += preQ3[t]; totals.target += techTarget; totals.actual += techActual;
+    totals.extra += extra[t]; totals.undated += uploadsUndated[t];
   });
 
   const totalScope = totals.preQ3 + totals.target;
@@ -1237,12 +1285,13 @@ function renderQ3Grid(stats) {
   Q3_WEEKS.forEach(w => {
     let wt = 0, wa = 0;
     TECHS.forEach(t => { wt += targetByTechWeek[t][w.n]; wa += actualByTechWeek[t][w.n]; });
-    const pctW = wt ? Math.round((wa / wt) * 100) : 0;
+    const pctW = wt ? Math.min(100, Math.round((wa / wt) * 100)) : 0;
     const pctColor = !wt ? 'var(--grey)' : (wa >= wt ? 'var(--green)' : 'var(--amber)');
     html += '<td style="text-align:center;">' + wa + '/' + wt +
       (wt ? '<br><span style="color:' + pctColor + ';font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
   });
-  html += '<td style="text-align:center;">' + totals.actual + '</td>' +
+  html += '<td style="text-align:center;' + (totals.undated ? 'color:var(--red);' : '') + '">' + totals.undated + '</td>' +
+    '<td style="text-align:center;">' + totals.actual + '</td>' +
     '<td style="text-align:center;">' + totalScope + '</td>' +
     '<td style="text-align:center;">' + totalPct + '%</td>' +
     '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td></tr>';
@@ -1454,10 +1503,13 @@ function renderMyAssignments(stats) {
   // report was generated, on any device (assigned to them or not). ----
   const actualByWeek = {};
   Q3_WEEKS.forEach(w => { actualByWeek[w.n] = 0; });
+  let myUploadsTotal = 0, myUploadsUndated = 0;
   state.machines.forEach(m => {
     if (m.uploadedBy !== tech) return;
+    myUploadsTotal++;
     const wn = weekNumberFor(m.generated);
     if (actualByWeek[wn] !== undefined) actualByWeek[wn]++;
+    else myUploadsUndated++;   // unreadable Generated date, or outside Q3
   });
 
   const curWeekNum = currentWeekNum();
@@ -1485,11 +1537,18 @@ function renderMyAssignments(stats) {
   // ---- Overall progress across all of Q3, including pre-Q3 credit ----
   // Without this, anyone whose work predates the dashboard shows 0%
   // even though a chunk of their scope is already finished.
-  let totalTarget = 0, totalWeekActual = 0;
-  Q3_WEEKS.forEach(w => { totalTarget += targetByWeek[w.n] || 0; totalWeekActual += actualByWeek[w.n] || 0; });
-  const overallActual = alreadyDoneCount + totalWeekActual;
+  let totalTarget = 0;
+  Q3_WEEKS.forEach(w => { totalTarget += targetByWeek[w.n] || 0; });
+  // Counts every upload, not just the ones that could be dated into a
+  // week - otherwise reports with an unreadable "Generated" line are
+  // silently uncredited.
+  const overallActual = alreadyDoneCount + myUploadsTotal;
   const overallScope = alreadyDoneCount + totalTarget;
-  const overallPct = overallScope ? Math.round((overallActual / overallScope) * 100) : 0;
+  const overallPct = overallScope ? Math.min(100, Math.round((overallActual / overallScope) * 100)) : 0;
+
+  const noteBits = [];
+  if (alreadyDoneCount) noteBits.push('<span class="badge compliant">' + alreadyDoneCount + ' pre-Q3 credited</span>');
+  if (myUploadsUndated) noteBits.push('<span class="badge attention" title="Uploaded and counted, but the report had no readable Generated date so it cannot be placed in a week.">' + myUploadsUndated + ' undated</span>');
 
   sHtml = sHtml.replace('</tbody>',
     '<tr style="font-weight:bold;background:var(--light-grey);">' +
@@ -1498,7 +1557,7 @@ function renderMyAssignments(stats) {
     '<td style="text-align:center;color:var(--green);">' + overallActual + '</td>' +
     '<td style="text-align:center;">' + Math.max(0, overallScope - overallActual) + '</td>' +
     '<td style="text-align:center;">' + overallPct + '%</td>' +
-    '<td>' + (alreadyDoneCount ? '<span class="badge compliant">' + alreadyDoneCount + ' pre-Q3 credited</span>' : '') + '</td>' +
+    '<td>' + noteBits.join(' ') + '</td>' +
     '</tr></tbody>');
   summaryArea.innerHTML = sHtml;
 
