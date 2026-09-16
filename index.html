@@ -387,7 +387,13 @@ async function fetchReportText(base, key, id) {
   return rows && rows.length ? rows[0] : null;
 }
 
-async function supabaseInsert(base, key, table, row) {
+// Columns the page can send that may not exist yet if a migration
+// hasn't been run. Losing one of these costs a nice-to-have; failing
+// the whole upload costs the technician's work, so an insert degrades
+// rather than dies.
+const OPTIONAL_COLUMNS = ['reportText'];
+
+async function supabaseInsert(base, key, table, row, _retryDepth) {
   const res = await fetch(base + '/rest/v1/' + table, {
     method: 'POST',
     headers: supabaseHeaders(key, { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
@@ -398,7 +404,29 @@ async function supabaseInsert(base, key, table, row) {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    return { ok: false, error: 'Insert into "' + table + '" failed (HTTP ' + res.status + '). ' + body.slice(0, 300) };
+
+    // PGRST204: the database does not have a column this page is
+    // sending, i.e. a migration is outstanding. Drop the optional
+    // column and retry once, so the report still gets saved.
+    const missing = body.match(/Could not find the '([^']+)' column/);
+    if (missing && (_retryDepth || 0) < OPTIONAL_COLUMNS.length) {
+      const col = missing[1];
+      if (OPTIONAL_COLUMNS.indexOf(col) >= 0 && Object.prototype.hasOwnProperty.call(row, col)) {
+        const trimmed = Object.assign({}, row);
+        delete trimmed[col];
+        const retry = await supabaseInsert(base, key, table, trimmed, (_retryDepth || 0) + 1);
+        if (retry.ok) {
+          retry.degraded = col;   // surfaced to the user, not swallowed
+        }
+        return retry;
+      }
+    }
+
+    let friendly = 'Insert into "' + table + '" failed (HTTP ' + res.status + '). ';
+    if (missing) {
+      friendly += 'The database is missing the "' + missing[1] + '" column - run the outstanding migration in the Supabase SQL editor. ';
+    }
+    return { ok: false, error: friendly + body.slice(0, 300) };
   }
   return { ok: true };
 }
@@ -430,7 +458,9 @@ async function postToServer(url, key, payload) {
     const r = await supabaseInsert(base, key, 'q3_assignments', payload.newQ3Row);
     if (!r.ok) return r;
   }
-  return { ok: true };
+  // Pass the degradation up so the uploader is told their report saved
+  // WITHOUT its full text, rather than it silently going missing.
+  return { ok: true, degraded: machineResult.degraded };
 }
 
 // ---------------------------------------------------------------
@@ -976,11 +1006,17 @@ function wireUploader() {
     uploaderSelect.classList.remove('missing');
 
     files.forEach(f => {
-      // Restrict duplicates against the persisted state (state.machines),
-      // not just this page load — parsedFilenames alone would reset on
-      // reload even though uploads are saved to localStorage.
-      if (parsedFilenames.has(f.name) || state.machines.some(m => m.file === f.name)) {
-        showToast(f.name, 'warning', 'Already uploaded — blocked');
+      // Only guard against processing the SAME FILE TWICE IN THIS BATCH.
+      //
+      // Deliberately no longer blocking on filename-matches-an-existing-
+      // row: the hardening script always writes
+      // CIS-Home-Hardening-Report-<identifier>.txt, so re-running it on
+      // the same machine produces a byte-for-byte identical filename.
+      // Treating that as a duplicate made it impossible to ever upload a
+      // second, newer report for a machine - including the corrected
+      // report after a failed parse.
+      if (parsedFilenames.has(f.name)) {
+        showToast('"' + f.name + '" is already in this batch - skipped the repeat.', 'info', 'Same file twice');
         return;
       }
       parsedFilenames.add(f.name);
@@ -997,10 +1033,21 @@ function wireUploader() {
           if (!parsed.parsedOk) {
             showToast('"' + f.name + '" could not be parsed (missing Pass/Fail counts or computer name) — nothing was added.', 'warning', 'Report not recognized');
           }
-          const dupe = state.machines.find(m => m.identifier === parsed.identifier && m.generated === parsed.generated);
+          // Only treat it as a duplicate when we have a REAL identity to
+          // compare. A report that failed to parse has identifier and
+          // generated both empty, and '' === '' matched the first such
+          // row - so once one corrupted report existed, every later one
+          // was wrongly rejected as "already uploaded".
+          const hasIdentity = parsed.identifier && parsed.generated;
+          const dupe = hasIdentity
+            ? state.machines.find(m => m.identifier === parsed.identifier && m.generated === parsed.generated)
+            : null;
           if (dupe) {
-            showToast('"' + parsed.identifier + '" at ' + parsed.generated + ' is already recorded (from "' + dupe.file + '"). This file was not added.', 'warning', 'Duplicate report blocked');
+            showToast('"' + parsed.identifier + '" generated at ' + parsed.generated + ' is already recorded (from "' + dupe.file + '"). Re-run the hardening script if you need a fresh report.', 'warning', 'Duplicate report blocked');
             return;
+          }
+          if (!hasIdentity) {
+            showToast('"' + f.name + '" has no readable computer name or Generated date, so it cannot be checked for duplicates - uploading it anyway.', 'info', 'Unverifiable report');
           }
           parsed.uploadedBy = uploader;
           parsed.weekNum = weekNumberFor(parsed.generated);
@@ -1063,6 +1110,9 @@ async function mergeIntoState(parsed, uploader) {
         return;
       }
       throw new Error(result.error || 'Shared database rejected the write.');
+    }
+    if (result.degraded === 'reportText') {
+      showToast('Saved, but the full report text was not stored - the database has no reportText column yet. Run supabase_migration_report_text.sql to keep report bodies from now on.', 'warning', 'Saved without report text');
     }
     const data = await fetchStateFromServer(serverUrl, serverKey);
     state = { rawDevices: data.rawDevices, machines: data.machines, q3Assignments: data.q3Assignments };
