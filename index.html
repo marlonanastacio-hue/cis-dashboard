@@ -115,10 +115,9 @@
 
   <div class="who-row">
     <label for="uploaderSelect">Your name</label>
+    <!-- Populated from the current quarter's roster by renderUploaderOptions() -->
     <select id="uploaderSelect">
       <option value="">Select your name&hellip;</option>
-      <option>John Allen Reyes</option><option>Paolo Dimayuga</option><option>Rachel Blanca</option>
-      <option>Jeffrey Jordan</option><option>Junar Paraoan</option>
     </select>
     <span class="who-hint">Required before uploading &mdash; also personalizes "My progress" below and credits reports toward your weekly target</span>
   </div>
@@ -159,8 +158,14 @@
   </div>
 
   <div class="section">
-    <h2>Q3 weekly targets (Aug 1 &ndash; Sep 30, 2026)</h2>
-    <p class="sub" style="margin-bottom:8px;">Each week cell shows <strong>actual / target</strong> and the resulting percentage. Actual counts reports a technician uploaded that week on any device.</p>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
+      <h2 style="margin:0;" id="quarterHeading">Weekly targets</h2>
+      <div class="btnrow">
+        <button class="secondary small" id="quarterQ3Btn">Q3</button>
+        <button class="secondary small" id="quarterQ4Btn">Q4</button>
+      </div>
+    </div>
+    <p class="sub" style="margin-bottom:8px;">Each week cell shows <strong>actual / target</strong> and the resulting percentage. Actual counts reports a technician uploaded that week on any device. Q4 targets are the devices still unfinished after Q3, split evenly across the remaining technicians.</p>
     <div class="qgrid-wrap"><table id="qGrid"></table></div>
   </div>
 
@@ -220,15 +225,37 @@
 const BOOTSTRAP = { rawDevices: [], machines: [], q3Assignments: [] };
 </script>
 <script>
-const TECHS = ['John Allen Reyes','Paolo Dimayuga','Rachel Blanca','Jeffrey Jordan','Junar Paraoan'];
-const PLACEHOLDERS = new Set(['', 'Default string', 'System Serial Number', null, undefined]);
+// ---------------------------------------------------------------
+// Quarters. Junar Paraoan left the roster after Q3, so he is listed
+// for Q3 (where his completed work must keep showing) and absent from
+// Q4. Rows in the database carry a "quarter" value; anything created
+// before that column existed is treated as Q3.
+// ---------------------------------------------------------------
+const QUARTERS = {
+  Q3: {
+    label: 'Q3 (Aug 1 – Sep 30, 2026)',
+    start: new Date(2026, 7, 1),    // Aug 1 - July was project ramp-up, not tracked
+    end:   new Date(2026, 8, 30),
+    techs: ['John Allen Reyes','Paolo Dimayuga','Rachel Blanca','Jeffrey Jordan','Junar Paraoan'],
+  },
+  Q4: {
+    label: 'Q4 (Oct 1 – Dec 31, 2026)',
+    start: new Date(2026, 9, 1),
+    end:   new Date(2026, 11, 31),
+    techs: ['John Allen Reyes','Paolo Dimayuga','Rachel Blanca','Jeffrey Jordan'],
+  },
+};
 
-// Week 1 = first week of August (the last week of July was project
-// setup/ramp-up, not a tracked work week).
-const Q3_WEEKS = (() => {
+const QUARTER_KEY = 'cisSelectedQuarter_v1';
+let currentQuarter = 'Q4';
+try {
+  const saved = localStorage.getItem(QUARTER_KEY);
+  if (saved && QUARTERS[saved]) currentQuarter = saved;
+} catch (e) {}
+
+function buildWeeks(start, end) {
   const weeks = [];
-  let cur = new Date(2026, 7, 1);
-  const end = new Date(2026, 8, 30);
+  let cur = new Date(start);
   let wn = 1;
   while (cur <= end) {
     const we = new Date(Math.min(cur.getTime() + 6 * 86400000, end.getTime()));
@@ -236,8 +263,65 @@ const Q3_WEEKS = (() => {
     cur = new Date(we.getTime() + 86400000);
     wn++;
   }
+  // Absorb a stub trailing week into the one before it. Oct 1 - Dec 31
+  // is 92 days, which would otherwise leave a 14th "week" holding only
+  // Dec 31 - an empty column on screen, and one week more than the SQL
+  // that generates the targets assigns to. Q3 (Aug 1 - Sep 30) ends on
+  // a 5-day week, which is a real working week and is left alone.
+  if (weeks.length > 1) {
+    const last = weeks[weeks.length - 1];
+    const days = Math.round((last.e - last.s) / 86400000) + 1;
+    if (days < 4) {
+      weeks.pop();
+      weeks[weeks.length - 1].e = last.e;
+    }
+  }
   return weeks;
-})();
+}
+Object.keys(QUARTERS).forEach(q => { QUARTERS[q].weeks = buildWeeks(QUARTERS[q].start, QUARTERS[q].end); });
+
+// The rest of the file reads these two as if a single quarter existed,
+// so switching quarters just repoints them and re-renders.
+let TECHS = QUARTERS[currentQuarter].techs;
+let Q3_WEEKS = QUARTERS[currentQuarter].weeks;
+
+function setQuarter(q) {
+  if (!QUARTERS[q]) return;
+  currentQuarter = q;
+  try { localStorage.setItem(QUARTER_KEY, q); } catch (e) {}
+  TECHS = QUARTERS[q].techs;
+  Q3_WEEKS = QUARTERS[q].weeks;
+  renderAll();
+}
+
+// Rows written before the quarter column existed are Q3 by definition.
+function rowQuarter(a) { return (a && a.quarter) ? a.quarter : 'Q3'; }
+
+// Which quarter a REPORT belongs to, from the date inside the report.
+// A report with no readable date cannot be placed, so it is attributed
+// to the quarter we are actually in - counted once, never in both.
+function liveQuarter() {
+  const now = new Date();
+  for (const q of Object.keys(QUARTERS)) {
+    if (now >= QUARTERS[q].start && now <= QUARTERS[q].end) return q;
+  }
+  return 'Q4';
+}
+function machineQuarter(m) {
+  const d = m && m.generated ? new Date(m.generated) : null;
+  if (d && !isNaN(d)) {
+    for (const q of Object.keys(QUARTERS)) {
+      if (d >= QUARTERS[q].start && d <= QUARTERS[q].end) return q;
+    }
+    return null;              // dated, but outside every tracked quarter
+  }
+  return liveQuarter();       // undated - attribute to the current quarter
+}
+function machinesForQuarter() {
+  return state.machines.filter(m => machineQuarter(m) === currentQuarter);
+}
+
+const PLACEHOLDERS = new Set(['', 'Default string', 'System Serial Number', null, undefined]);
 
 function weekNumberFor(generatedStr) {
   if (!generatedStr) return '';
@@ -472,8 +556,16 @@ async function postToServer(url, key, payload) {
 // stay in the database for the audit trail but must never count toward
 // anyone's target, actual, or percentage.
 function isRemoved(a) { return a && (a.removed === true || a.removed === 'TRUE' || a.removed === 'true'); }
-function activeAssignments() { return state.q3Assignments.filter(a => !isRemoved(a)); }
-function removedAssignments() { return state.q3Assignments.filter(isRemoved); }
+// Scoped to the quarter being viewed - mixing Q3 and Q4 rows would
+// double every target.
+function activeAssignments() {
+  return state.q3Assignments.filter(a => !isRemoved(a) && rowQuarter(a) === currentQuarter);
+}
+function removedAssignments() {
+  return state.q3Assignments.filter(a => isRemoved(a) && rowQuarter(a) === currentQuarter);
+}
+// Every quarter's rows, for the manage screen and exports.
+function allActiveAssignments() { return state.q3Assignments.filter(a => !isRemoved(a)); }
 
 // Inventory rows can be removed too (service/shared mailboxes that are
 // not real assignable end-user devices). Without this, the device-level
@@ -691,6 +783,7 @@ function initApp() {
   wireDeviceExplorer();
   wireManageTargets();
   wireReportViewer();
+  wireQuarterToggle();
 
   if (serverUrl && serverKey) {
     connectToServer(serverUrl, serverKey, true);
@@ -1229,7 +1322,52 @@ function renderCharts(stats) {
 function destroyChart(key) { if (charts[key]) { charts[key].destroy(); delete charts[key]; } }
 
 // ---- Q3 grid ----
+function wireQuarterToggle() {
+  const q3 = document.getElementById('quarterQ3Btn');
+  const q4 = document.getElementById('quarterQ4Btn');
+  if (!q3 || !q4) return;
+  q3.addEventListener('click', () => setQuarter('Q3'));
+  q4.addEventListener('click', () => setQuarter('Q4'));
+}
+
+// Keeps the name picker in step with the quarter's roster, so a
+// retired technician cannot be selected for current-quarter uploads
+// while their past work stays visible under Q3.
+function renderUploaderOptions() {
+  const sel = document.getElementById('uploaderSelect');
+  if (!sel) return;
+  // wireUploader() restores the saved name before these options exist,
+  // so the assignment there is a no-op and sel.value reads empty. Fall
+  // back to storage rather than losing the technician's selection.
+  let chosen = sel.value;
+  if (!chosen) {
+    try { chosen = localStorage.getItem(MY_TECH_KEY) || ''; } catch (e) { chosen = ''; }
+  }
+  const names = QUARTERS[currentQuarter].techs;
+  sel.innerHTML = '<option value="">Select your name…</option>' +
+    names.map(n => '<option' + (n === chosen ? ' selected' : '') + '>' + escapeHtml(n) + '</option>').join('');
+  // Someone saved under a name that is no longer on this quarter's
+  // roster: keep it selectable rather than silently clearing it.
+  if (chosen && names.indexOf(chosen) === -1) {
+    sel.innerHTML += '<option selected>' + escapeHtml(chosen) + '</option>';
+  }
+}
+
+function renderQuarterChrome() {
+  renderUploaderOptions();
+  const heading = document.getElementById('quarterHeading');
+  if (heading) heading.textContent = 'Weekly targets — ' + QUARTERS[currentQuarter].label;
+  [['Q3', 'quarterQ3Btn'], ['Q4', 'quarterQ4Btn']].forEach(([q, id]) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    const on = (q === currentQuarter);
+    btn.style.background = on ? 'var(--navy)' : '#fff';
+    btn.style.color = on ? '#fff' : 'var(--navy)';
+  });
+}
+
 function renderQ3Grid(stats) {
+  renderQuarterChrome();
   // Targets are an open quota: assigned rows SET each tech's weekly
   // target, but "actual" counts what they actually completed — their
   // uploaded reports for that week, on any device, PLUS the pre-Q3
@@ -1273,7 +1411,7 @@ function renderQ3Grid(stats) {
   const uploadsUndated = {};
   TECHS.forEach(t => { uploadsTotal[t] = 0; uploadsUndated[t] = 0; });
 
-  state.machines.forEach(m => {
+  machinesForQuarter().forEach(m => {
     if (!m.uploadedBy || !actualByTechWeek[m.uploadedBy]) return;
     uploadsTotal[m.uploadedBy]++;
     const wn = weekNumberFor(m.generated);
@@ -1554,7 +1692,7 @@ function renderMyAssignments(stats) {
   const actualByWeek = {};
   Q3_WEEKS.forEach(w => { actualByWeek[w.n] = 0; });
   let myUploadsTotal = 0, myUploadsUndated = 0;
-  state.machines.forEach(m => {
+  machinesForQuarter().forEach(m => {
     if (m.uploadedBy !== tech) return;
     myUploadsTotal++;
     const wn = weekNumberFor(m.generated);
@@ -1730,7 +1868,10 @@ function renderManageTargets() {
   }
 
   const q = (document.getElementById('manageSearch').value || '').trim().toLowerCase();
-  let rows = activeAssignments();
+  // Admin sees EVERY quarter here, not just the one being viewed - when
+  // a device needs removing you shouldn't have to guess which quarter
+  // its row lives in.
+  let rows = allActiveAssignments();
   if (q) {
     rows = rows.filter(a =>
       (a.email || '').toLowerCase().includes(q) ||
@@ -1741,14 +1882,18 @@ function renderManageTargets() {
   }
   const shown = rows.slice(0, 100);
 
-  let html = '<thead><tr><th>Technician</th><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Serial</th><th style="width:190px;">Actions</th></tr></thead><tbody>';
+  let html = '<thead><tr><th>Qtr</th><th>Technician</th><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Serial</th><th style="width:190px;">Actions</th></tr></thead><tbody>';
   if (shown.length === 0) {
-    html += '<tr><td colspan="7" class="empty">' + (q ? 'No target rows match "' + escapeHtml(q) + '".' : 'No target rows.') + '</td></tr>';
+    html += '<tr><td colspan="8" class="empty">' + (q ? 'No target rows match "' + escapeHtml(q) + '".' : 'No target rows.') + '</td></tr>';
   } else {
     shown.forEach(a => {
       if (String(a.id) === String(manageEditingId)) {
-        const techOpts = TECHS.map(t => '<option' + (t === a.tech ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('');
+        // Offer whichever roster belongs to THAT row's quarter, so a Q3
+        // row can still be reassigned to Junar while Q4 rows cannot.
+        const roster = (QUARTERS[rowQuarter(a)] || QUARTERS.Q4).techs;
+        const techOpts = roster.map(t => '<option' + (t === a.tech ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('');
         html += '<tr style="background:#EEF3F8;">' +
+          '<td>' + escapeHtml(rowQuarter(a)) + '</td>' +
           '<td><select id="editTech" style="font-size:11px;padding:3px;max-width:130px;">' + techOpts + '</select></td>' +
           '<td>' + escapeHtml(a.weekNum) + '</td>' +
           '<td><input id="editEmail" type="text" value="' + escapeHtml(a.email) + '" style="font-size:11px;padding:3px;width:100%;min-width:150px;"></td>' +
@@ -1759,6 +1904,7 @@ function renderManageTargets() {
           '<button class="secondary small" data-cancel="1">Cancel</button></td></tr>';
       } else {
         html += '<tr>' +
+          '<td>' + escapeHtml(rowQuarter(a)) + '</td>' +
           '<td>' + escapeHtml(a.tech) + '</td>' +
           '<td>' + escapeHtml(a.weekNum) + '</td>' +
           '<td>' + escapeHtml(a.email) + '</td>' +
