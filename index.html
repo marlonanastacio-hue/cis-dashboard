@@ -165,7 +165,7 @@
         <button class="secondary small" id="quarterQ4Btn">Q4</button>
       </div>
     </div>
-    <p class="sub" style="margin-bottom:8px;">Each week cell shows <strong>actual / target</strong> and the resulting percentage. Actual counts reports a technician uploaded that week on any device. Q4 targets are the devices still unfinished after Q3, split evenly across the remaining technicians.</p>
+    <p class="sub" style="margin-bottom:8px;">Each week cell shows <strong>actual / target</strong> and the resulting percentage. Actual counts reports a technician uploaded that week on any device.</p>
     <div class="qgrid-wrap"><table id="qGrid"></table></div>
   </div>
 
@@ -228,18 +228,18 @@ const BOOTSTRAP = { rawDevices: [], machines: [], q3Assignments: [] };
 // ---------------------------------------------------------------
 // Quarters. Junar Paraoan left the roster after Q3, so he is listed
 // for Q3 (where his completed work must keep showing) and absent from
-// Q4. Rows in the database carry a "quarter" value; anything created
-// before that column existed is treated as Q3.
+// Q4. Rows carry a "quarter" value; anything written before that
+// column existed is treated as Q3.
 // ---------------------------------------------------------------
 const QUARTERS = {
   Q3: {
-    label: 'Q3 (Aug 1 – Sep 30, 2026)',
-    start: new Date(2026, 7, 1),    // Aug 1 - July was project ramp-up, not tracked
+    label: 'Q3 (Aug 1 \u2013 Sep 30, 2026)',
+    start: new Date(2026, 7, 1),   // Aug 1 - July was ramp-up, not tracked
     end:   new Date(2026, 8, 30),
     techs: ['John Allen Reyes','Paolo Dimayuga','Rachel Blanca','Jeffrey Jordan','Junar Paraoan'],
   },
   Q4: {
-    label: 'Q4 (Oct 1 – Dec 31, 2026)',
+    label: 'Q4 (Oct 1 \u2013 Dec 31, 2026)',
     start: new Date(2026, 9, 1),
     end:   new Date(2026, 11, 31),
     techs: ['John Allen Reyes','Paolo Dimayuga','Rachel Blanca','Jeffrey Jordan'],
@@ -263,25 +263,21 @@ function buildWeeks(start, end) {
     cur = new Date(we.getTime() + 86400000);
     wn++;
   }
-  // Absorb a stub trailing week into the one before it. Oct 1 - Dec 31
-  // is 92 days, which would otherwise leave a 14th "week" holding only
-  // Dec 31 - an empty column on screen, and one week more than the SQL
-  // that generates the targets assigns to. Q3 (Aug 1 - Sep 30) ends on
-  // a 5-day week, which is a real working week and is left alone.
+  // Absorb a stub trailing week. Oct 1 - Dec 31 is 92 days, which would
+  // otherwise leave a 14th "week" holding only Dec 31 - an empty column,
+  // and one week more than the SQL that generates targets assigns to.
+  // Q3 ends on a 5-day week, which is a real working week; left alone.
   if (weeks.length > 1) {
     const last = weeks[weeks.length - 1];
     const days = Math.round((last.e - last.s) / 86400000) + 1;
-    if (days < 4) {
-      weeks.pop();
-      weeks[weeks.length - 1].e = last.e;
-    }
+    if (days < 4) { weeks.pop(); weeks[weeks.length - 1].e = last.e; }
   }
   return weeks;
 }
 Object.keys(QUARTERS).forEach(q => { QUARTERS[q].weeks = buildWeeks(QUARTERS[q].start, QUARTERS[q].end); });
 
-// The rest of the file reads these two as if a single quarter existed,
-// so switching quarters just repoints them and re-renders.
+// The rest of the file reads these as if one quarter existed, so
+// switching just repoints them and re-renders.
 let TECHS = QUARTERS[currentQuarter].techs;
 let Q3_WEEKS = QUARTERS[currentQuarter].weeks;
 
@@ -294,12 +290,11 @@ function setQuarter(q) {
   renderAll();
 }
 
-// Rows written before the quarter column existed are Q3 by definition.
 function rowQuarter(a) { return (a && a.quarter) ? a.quarter : 'Q3'; }
 
-// Which quarter a REPORT belongs to, from the date inside the report.
-// A report with no readable date cannot be placed, so it is attributed
-// to the quarter we are actually in - counted once, never in both.
+// Which quarter a REPORT belongs to, from the date inside it. A report
+// with no readable date can't be placed, so it is attributed to the
+// quarter we are actually in - counted once, never in both.
 function liveQuarter() {
   const now = new Date();
   for (const q of Object.keys(QUARTERS)) {
@@ -313,15 +308,16 @@ function machineQuarter(m) {
     for (const q of Object.keys(QUARTERS)) {
       if (d >= QUARTERS[q].start && d <= QUARTERS[q].end) return q;
     }
-    return null;              // dated, but outside every tracked quarter
+    return null;
   }
-  return liveQuarter();       // undated - attribute to the current quarter
+  return liveQuarter();
 }
 function machinesForQuarter() {
   return state.machines.filter(m => machineQuarter(m) === currentQuarter);
 }
 
 const PLACEHOLDERS = new Set(['', 'Default string', 'System Serial Number', null, undefined]);
+
 
 function weekNumberFor(generatedStr) {
   if (!generatedStr) return '';
@@ -421,10 +417,9 @@ function supabaseHeaders(key, extra) {
   }, extra || {});
 }
 
-// Every column EXCEPT reportText. Full report bodies are ~16 KB each,
-// so pulling them on every 30-second poll would mean tens of megabytes
-// of traffic for data nobody is looking at. They're fetched one at a
-// time, on demand, when someone actually clicks "View".
+// Every column EXCEPT reportText. Report bodies are ~16 KB each, so
+// pulling them on every 30-second poll would move tens of megabytes of
+// data nobody is looking at. One body is fetched on demand on "View".
 const MACHINE_COLUMNS = 'id,site,identifier,status,computer,pass,fail,skip,generated,serial,file,failDetails,uploadedBy,weekNum';
 
 async function fetchStateFromServer(url, key) {
@@ -444,8 +439,8 @@ async function supabaseSelect(base, key, table, columns) {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    // A missing reportText column means the migration hasn't been run;
-    // fall back to * so the dashboard keeps working either way.
+    // A missing column means a migration hasn't been run; fall
+    // back to * so the dashboard keeps working either way.
     if (columns && (res.status === 400 || res.status === 404)) {
       return supabaseSelect(base, key, table, null);
     }
@@ -463,7 +458,7 @@ async function fetchReportText(base, key, id) {
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     if (res.status === 400 || res.status === 404) {
-      throw new Error('The database has no reportText column yet - run supabase_migration_report_text.sql in the Supabase SQL editor.');
+      throw new Error('The database has no reportText column yet - run supabase_migration_report_text.sql.');
     }
     throw new Error('Could not load the report (HTTP ' + res.status + '). ' + body.slice(0, 200));
   }
@@ -471,10 +466,24 @@ async function fetchReportText(base, key, id) {
   return rows && rows.length ? rows[0] : null;
 }
 
-// Columns the page can send that may not exist yet if a migration
-// hasn't been run. Losing one of these costs a nice-to-have; failing
-// the whole upload costs the technician's work, so an insert degrades
-// rather than dies.
+async function supabaseUpdate(base, key, table, id, patch) {
+  const res = await fetch(base + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: supabaseHeaders(key, { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    return { ok: false, error: 'Update failed (HTTP ' + res.status + '). ' + (res.status === 401 || res.status === 403
+      ? 'The database is not allowing updates yet - run supabase_migration_manage_targets.sql.'
+      : body.slice(0, 300)) };
+  }
+  return { ok: true };
+}
+
+// Columns the page may send that might not exist yet if a migration is
+// outstanding. Losing one costs a nice-to-have; failing the whole
+// upload costs the technician's work - so degrade, don't die.
 const OPTIONAL_COLUMNS = ['reportText'];
 
 async function supabaseInsert(base, key, table, row, _retryDepth) {
@@ -489,9 +498,8 @@ async function supabaseInsert(base, key, table, row, _retryDepth) {
   if (!res.ok) {
     const body = await res.text().catch(() => '');
 
-    // PGRST204: the database does not have a column this page is
-    // sending, i.e. a migration is outstanding. Drop the optional
-    // column and retry once, so the report still gets saved.
+    // PGRST204: the database lacks a column this page sends. Drop the
+    // optional column and retry once so the report still gets saved.
     const missing = body.match(/Could not find the '([^']+)' column/);
     if (missing && (_retryDepth || 0) < OPTIONAL_COLUMNS.length) {
       const col = missing[1];
@@ -499,33 +507,16 @@ async function supabaseInsert(base, key, table, row, _retryDepth) {
         const trimmed = Object.assign({}, row);
         delete trimmed[col];
         const retry = await supabaseInsert(base, key, table, trimmed, (_retryDepth || 0) + 1);
-        if (retry.ok) {
-          retry.degraded = col;   // surfaced to the user, not swallowed
-        }
+        if (retry.ok) retry.degraded = col;
         return retry;
       }
     }
 
     let friendly = 'Insert into "' + table + '" failed (HTTP ' + res.status + '). ';
     if (missing) {
-      friendly += 'The database is missing the "' + missing[1] + '" column - run the outstanding migration in the Supabase SQL editor. ';
+      friendly += 'The database is missing the "' + missing[1] + '" column - run the outstanding migration. ';
     }
     return { ok: false, error: friendly + body.slice(0, 300) };
-  }
-  return { ok: true };
-}
-
-async function supabaseUpdate(base, key, table, id, patch) {
-  const res = await fetch(base + '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), {
-    method: 'PATCH',
-    headers: supabaseHeaders(key, { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' }),
-    body: JSON.stringify(patch),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    return { ok: false, error: 'Update failed (HTTP ' + res.status + '). ' + (res.status === 401 || res.status === 403
-      ? 'The database is not allowing updates yet — run supabase_migration_manage_targets.sql in the Supabase SQL editor.'
-      : body.slice(0, 300)) };
   }
   return { ok: true };
 }
@@ -552,10 +543,11 @@ async function postToServer(url, key, payload) {
 // both its historic match (baked into the page) and any Machines
 // rows added this session (by matching Endpoint Serial Number).
 // ---------------------------------------------------------------
-// Rows removed from targets (resigned staff, retired/returned devices)
-// stay in the database for the audit trail but must never count toward
-// anyone's target, actual, or percentage.
+// Rows removed from targets (resigned staff, retired devices, service
+// accounts) stay in the database for the audit trail but must never
+// count toward anyone's target, actual or percentage.
 function isRemoved(a) { return a && (a.removed === true || a.removed === 'TRUE' || a.removed === 'true'); }
+
 // Scoped to the quarter being viewed - mixing Q3 and Q4 rows would
 // double every target.
 function activeAssignments() {
@@ -564,14 +556,11 @@ function activeAssignments() {
 function removedAssignments() {
   return state.q3Assignments.filter(a => isRemoved(a) && rowQuarter(a) === currentQuarter);
 }
-// Every quarter's rows, for the manage screen and exports.
+// Every quarter's rows, for the admin screen.
 function allActiveAssignments() { return state.q3Assignments.filter(a => !isRemoved(a)); }
 
-// Inventory rows can be removed too (service/shared mailboxes that are
-// not real assignable end-user devices). Without this, the device-level
-// counters - "Raw devices tracked", "Not yet compliant", "Actionable",
-// the explorer, the pending pool, the completion report - keep counting
-// devices that were deliberately taken out of scope.
+// Inventory rows can be removed too. Without this the device-level
+// counters keep counting devices deliberately taken out of scope.
 function activeRawDevices() { return state.rawDevices.filter(rd => !isRemoved(rd)); }
 function removedRawDevices() { return state.rawDevices.filter(isRemoved); }
 
@@ -596,10 +585,8 @@ function liveDeviceStatus(rd, bySerial) {
     if (hits && hits.length) {
       const m = hits[0];
       // A report that could not be parsed still proves the machine was
-      // hardened, so it counts as done - but it is NOT reported as
+      // hardened, so it counts as done - but it is NOT called
       // "Compliant", because nobody can read whether the checks passed.
-      // Calling it compliant would put an unverifiable claim in front of
-      // an auditor.
       if (m.status === 'Done - Report Unreadable' || m.status === 'Corrupted - Needs Re-run') {
         return { status: 'Done - Report Unreadable', live: true };
       }
@@ -616,15 +603,15 @@ function computeStats() {
   const machines = state.machines;
   const compliant = machines.filter(m => m.status === 'Compliant').length;
   const needsAttention = machines.filter(m => m.status === 'Needs Attention').length;
-  // Still-unparsed reports awaiting a re-run, vs ones deliberately
-  // accepted as done-but-unreadable. Kept separate so "needs re-run"
-  // never quietly includes work that has already been signed off.
+  // Still-unparsed reports awaiting a re-run, vs ones accepted as
+  // done-but-unreadable. Kept separate so "needs re-run" never quietly
+  // includes work already signed off.
   const corrupted = machines.filter(m => m.status === 'Corrupted - Needs Re-run').length;
   const unreadableDone = machines.filter(m => m.status === 'Done - Report Unreadable').length;
 
   let done = 0, notFound = 0, actionable = 0;
   const coverage = { 'Done - Compliant': 0, 'Done - Needs Attention': 0, 'Done - Report Unreadable': 0, 'Not Found': 0 };
-  // Inventory rows taken out of scope must not inflate the denominator.
+  // Inventory rows out of scope must not inflate the denominator.
   const activeDevices = activeRawDevices();
   activeDevices.forEach(rd => {
     const { status } = liveDeviceStatus(rd, bySerial);
@@ -689,9 +676,8 @@ function parseReport(text, filename) {
   return {
     site, identifier, status, computer, pass: pass || '', fail: fail || '', skip: skip || '',
     generated, serial, file: filename, failDetails: failLines.join(' ;; '), parsedOk,
-    // Keep the untouched original so it can be stored as evidence. The
-    // parsed fields above are a summary; auditors and the SOC will want
-    // the actual report the script produced.
+    // Keep the untouched original as evidence - the parsed fields are
+    // only a summary, and auditors want the actual report.
     reportText: text,
   };
 }
@@ -916,120 +902,6 @@ function wireTopbar() {
   });
 }
 
-// ---------------------------------------------------------------
-// Completion report - who is finished with hardening and who is not.
-// Built from live data every time it is clicked, so it is always
-// current rather than a snapshot someone saved weeks ago.
-// ---------------------------------------------------------------
-function exportCompletionReport() {
-  if (typeof XLSX === 'undefined') {
-    showToast('The spreadsheet library did not load (offline?). Reconnect and try again.', 'error', 'Export unavailable');
-    return;
-  }
-  const bySerial = machinesBySerial();
-
-  // Who the device was assigned to, and whether it was pre-Q3 credit.
-  const assignBySerial = new Map();
-  (typeof activeAssignments === 'function' ? activeAssignments() : state.q3Assignments).forEach(a => {
-    const k = a.endpointSerial ? String(a.endpointSerial).trim() : '';
-    if (k && !assignBySerial.has(k)) assignBySerial.set(k, a);
-  });
-
-  const done = [];
-  const pending = [];
-
-  activeRawDevices().forEach(rd => {
-    const st = liveDeviceStatus(rd, bySerial);
-    const key = rd.endpointSerial ? String(rd.endpointSerial).trim() : '';
-    const assign = key ? assignBySerial.get(key) : null;
-
-    // Most recent matching report gives us when and by whom.
-    let report = null;
-    if (key && bySerial.has(key)) {
-      const hits = bySerial.get(key).slice();
-      hits.sort((a, b) => String(b.generated || '').localeCompare(String(a.generated || '')));
-      report = hits[0];
-    }
-
-    if (st.status.indexOf('Done') === 0) {
-      done.push([
-        rd.email || '', rd.endpointHost || '', rd.endpointSerial || '', rd.model || '',
-        st.status,
-        report ? (report.generated || '') : '',
-        report ? (report.uploadedBy || 'Pre-Q3 / baseline') : 'Pre-Q3 / baseline',
-        report ? (report.pass || '') : '',
-        report ? (report.fail || '') : '',
-        assign ? assign.tech : '',
-      ]);
-    } else {
-      pending.push([
-        rd.email || '', rd.endpointHost || '', rd.endpointSerial || '', rd.model || '',
-        assign ? assign.tech : '(unassigned)',
-        assign ? assign.weekNum : '',
-        (rd.endpointHost && !PLACEHOLDERS.has(String(rd.endpointHost).trim())) ? 'Yes' : 'No',
-      ]);
-    }
-  });
-
-  const total = done.length + pending.length;
-  const pct = total ? Math.round((done.length / total) * 100) : 0;
-  const excluded = state.rawDevices.length - total;
-  const compliant = done.filter(r => r[4] === 'Done - Compliant').length;
-  const attention = done.filter(r => r[4].indexOf('Needs Attention') >= 0).length;
-
-  const wb = XLSX.utils.book_new();
-
-  // --- Summary ---
-  const summary = [
-    ['CIS Hardening Completion Report'],
-    ['Generated', new Date().toLocaleString()],
-    [],
-    ['Devices in scope', total],
-    ['Finished (hardening report on file)', done.length],
-    ['Not yet finished', pending.length],
-    ['Percent complete', pct + '%'],
-    ['Excluded from scope (service/shared accounts, retired)', excluded],
-    [],
-    ['Of those finished:'],
-    ['  Compliant (no failed checks)', compliant],
-    ['  Done but needs attention (has failures)', attention],
-  ];
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
-
-  // --- Finished ---
-  const doneHeader = ['User Email', 'Endpoint Host', 'Serial', 'Model', 'Result',
-                      'Date Hardened', 'Hardened By', 'Pass', 'Fail', 'Assigned To'];
-  done.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([doneHeader].concat(done)), 'Finished');
-
-  // --- Not finished ---
-  const pendHeader = ['User Email', 'Endpoint Host', 'Serial', 'Model',
-                      'Assigned To', 'Target Week', 'Reachable (has hostname)'];
-  pending.sort((a, b) => String(a[4]).localeCompare(String(b[4])) || String(a[0]).localeCompare(String(b[0])));
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([pendHeader].concat(pending)), 'Not Finished');
-
-  // --- By technician ---
-  const techHeader = ['Technician', 'Pre-Q3 Done', 'Q3 Target', 'Uploaded This Q3',
-                      'Total Actual', 'Total Scope', 'Percent Complete'];
-  const techRows = TECHS.map(t => {
-    let preQ3 = 0, target = 0;
-    (typeof activeAssignments === 'function' ? activeAssignments() : state.q3Assignments).forEach(a => {
-      if (a.tech !== t) return;
-      if (a.alreadyDone) { preQ3++; return; }
-      if (a.extra) return;
-      target++;
-    });
-    const uploaded = state.machines.filter(m => m.uploadedBy === t).length;
-    const actual = preQ3 + uploaded;
-    const scope = preQ3 + target;
-    return [t, preQ3, target, uploaded, actual, scope, (scope ? Math.round((actual / scope) * 100) : 0) + '%'];
-  });
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([techHeader].concat(techRows)), 'By Technician');
-
-  XLSX.writeFile(wb, 'CIS_Completion_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx');
-  showToast(done.length + ' finished, ' + pending.length + ' still pending (' + pct + '% complete).', 'success', 'Completion report exported');
-}
-
 function exportXlsxSnapshot() {
   const bySerial = machinesBySerial();
   const wb = XLSX.utils.book_new();
@@ -1048,13 +920,14 @@ function exportXlsxSnapshot() {
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([rHeader].concat(rRows)), 'RAW Devices');
 
-  const qHeader = ['Technician','Week #','Week Dates','User Email','Device Model','Mac Address','Endpoint Host Name','Endpoint Serial Number','Self-Report By','Validated (auto)','Removed','Removed By','Removed At','Remove Reason'];
+  const qHeader = ['Quarter','Technician','Week #','Week Dates','User Email','Device Model','Mac Address','Endpoint Host Name','Endpoint Serial Number','Self-Report By','Validated (auto)','Removed','Removed By','Removed At','Remove Reason'];
   const qRows = state.q3Assignments.map(a => {
     const validated = a.endpointSerial && !PLACEHOLDERS.has(String(a.endpointSerial).trim())
       ? (bySerial.has(String(a.endpointSerial).trim()) ? 'Yes' : 'No') : 'Manual Check Needed';
     const sr = selfReports[a.endpointSerial];
-    return [a.tech, a.weekNum, a.weekDates, a.email, a.model, a.mac, a.endpointHost, a.endpointSerial, sr ? sr.uploadedBy : '', validated,
-      isRemoved(a) ? 'Yes' : '', a.removedBy || '', a.removedAt || '', a.removeReason || ''];
+    return [rowQuarter(a), a.tech, a.weekNum, a.weekDates, a.email, a.model, a.mac, a.endpointHost, a.endpointSerial,
+            sr ? sr.uploadedBy : '', validated,
+            isRemoved(a) ? 'Yes' : '', a.removedBy || '', a.removedAt || '', a.removeReason || ''];
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([qHeader].concat(qRows)), 'Q3 Targets');
 
@@ -1099,15 +972,15 @@ function wireUploader() {
     uploaderSelect.classList.remove('missing');
 
     files.forEach(f => {
-      // Only guard against processing the SAME FILE TWICE IN THIS BATCH.
-      //
-      // Deliberately no longer blocking on filename-matches-an-existing-
-      // row: the hardening script always writes
+      // Restrict duplicates against the persisted state (state.machines),
+      // not just this page load — parsedFilenames alone would reset on
+      // reload even though uploads are saved to localStorage.
+      // Only guard against the SAME FILE TWICE IN THIS BATCH.
+      // Deliberately not blocking on filename-matches-existing-row: the
+      // hardening script always writes
       // CIS-Home-Hardening-Report-<identifier>.txt, so re-running it on
-      // the same machine produces a byte-for-byte identical filename.
-      // Treating that as a duplicate made it impossible to ever upload a
-      // second, newer report for a machine - including the corrected
-      // report after a failed parse.
+      // a machine produces an identical filename. Treating that as a
+      // duplicate made it impossible to ever upload a newer report.
       if (parsedFilenames.has(f.name)) {
         showToast('"' + f.name + '" is already in this batch - skipped the repeat.', 'info', 'Same file twice');
         return;
@@ -1126,21 +999,21 @@ function wireUploader() {
           if (!parsed.parsedOk) {
             showToast('"' + f.name + '" could not be parsed (missing Pass/Fail counts or computer name) — nothing was added.', 'warning', 'Report not recognized');
           }
-          // Only treat it as a duplicate when we have a REAL identity to
-          // compare. A report that failed to parse has identifier and
-          // generated both empty, and '' === '' matched the first such
-          // row - so once one corrupted report existed, every later one
-          // was wrongly rejected as "already uploaded".
+          // Only treat it as a duplicate when there is a REAL identity
+          // to compare. An unparsed report has identifier and generated
+          // both empty, and '' === '' matched the first such row - so
+          // once one corrupted report existed, every later one was
+          // wrongly rejected as "already uploaded".
           const hasIdentity = parsed.identifier && parsed.generated;
           const dupe = hasIdentity
             ? state.machines.find(m => m.identifier === parsed.identifier && m.generated === parsed.generated)
             : null;
-          if (dupe) {
-            showToast('"' + parsed.identifier + '" generated at ' + parsed.generated + ' is already recorded (from "' + dupe.file + '"). Re-run the hardening script if you need a fresh report.', 'warning', 'Duplicate report blocked');
-            return;
-          }
           if (!hasIdentity) {
             showToast('"' + f.name + '" has no readable computer name or Generated date, so it cannot be checked for duplicates - uploading it anyway.', 'info', 'Unverifiable report');
+          }
+          if (dupe) {
+            showToast('"' + parsed.identifier + '" at ' + parsed.generated + ' is already recorded (from "' + dupe.file + '"). This file was not added.', 'warning', 'Duplicate report blocked');
+            return;
           }
           parsed.uploadedBy = uploader;
           parsed.weekNum = weekNumberFor(parsed.generated);
@@ -1330,24 +1203,22 @@ function wireQuarterToggle() {
   q4.addEventListener('click', () => setQuarter('Q4'));
 }
 
-// Keeps the name picker in step with the quarter's roster, so a
-// retired technician cannot be selected for current-quarter uploads
-// while their past work stays visible under Q3.
+// Keeps the name picker in step with the quarter's roster, so a retired
+// technician can't be picked for current-quarter uploads while their
+// past work stays visible under Q3.
 function renderUploaderOptions() {
   const sel = document.getElementById('uploaderSelect');
   if (!sel) return;
   // wireUploader() restores the saved name before these options exist,
-  // so the assignment there is a no-op and sel.value reads empty. Fall
-  // back to storage rather than losing the technician's selection.
+  // so that assignment is a no-op and sel.value reads empty. Fall back
+  // to storage rather than losing the technician's selection.
   let chosen = sel.value;
   if (!chosen) {
     try { chosen = localStorage.getItem(MY_TECH_KEY) || ''; } catch (e) { chosen = ''; }
   }
   const names = QUARTERS[currentQuarter].techs;
-  sel.innerHTML = '<option value="">Select your name…</option>' +
+  sel.innerHTML = '<option value="">Select your name\u2026</option>' +
     names.map(n => '<option' + (n === chosen ? ' selected' : '') + '>' + escapeHtml(n) + '</option>').join('');
-  // Someone saved under a name that is no longer on this quarter's
-  // roster: keep it selectable rather than silently clearing it.
   if (chosen && names.indexOf(chosen) === -1) {
     sel.innerHTML += '<option selected>' + escapeHtml(chosen) + '</option>';
   }
@@ -1356,11 +1227,11 @@ function renderUploaderOptions() {
 function renderQuarterChrome() {
   renderUploaderOptions();
   const heading = document.getElementById('quarterHeading');
-  if (heading) heading.textContent = 'Weekly targets — ' + QUARTERS[currentQuarter].label;
-  [['Q3', 'quarterQ3Btn'], ['Q4', 'quarterQ4Btn']].forEach(([q, id]) => {
-    const btn = document.getElementById(id);
+  if (heading) heading.textContent = 'Weekly targets \u2014 ' + QUARTERS[currentQuarter].label;
+  [['Q3', 'quarterQ3Btn'], ['Q4', 'quarterQ4Btn']].forEach(function (pair) {
+    const btn = document.getElementById(pair[1]);
     if (!btn) return;
-    const on = (q === currentQuarter);
+    const on = (pair[0] === currentQuarter);
     btn.style.background = on ? 'var(--navy)' : '#fff';
     btn.style.color = on ? '#fff' : 'var(--navy)';
   });
@@ -1368,12 +1239,11 @@ function renderQuarterChrome() {
 
 function renderQ3Grid(stats) {
   renderQuarterChrome();
+
   // Targets are an open quota: assigned rows SET each tech's weekly
-  // target, but "actual" counts what they actually completed — their
-  // uploaded reports for that week, on any device, PLUS the pre-Q3
-  // work already credited to them (those devices were hardened before
-  // this dashboard existed, so there's no uploaded report carrying
-  // their name; the credit lives in the assignment rows instead).
+  // target, but "actual" counts what they actually completed - their
+  // uploaded reports, on any device, PLUS pre-quarter credit (hardened
+  // before this dashboard existed, so no report carries their name).
   const targetByTechWeek = {};
   const actualByTechWeek = {};
   const preQ3 = {};
@@ -1393,20 +1263,12 @@ function renderQ3Grid(stats) {
     if (targetByTechWeek[a.tech][a.weekNum] !== undefined) targetByTechWeek[a.tech][a.weekNum]++;
   });
 
-  // Count EVERY upload, then separately work out which ones can be
-  // placed in a Q3 week.
-  //
-  // This is the bug that made Junar show 84 when he had uploaded 90+:
-  // a report whose "Generated" line is missing or unparseable (every
-  // corrupted report, for instance) produces no week number, so the
-  // old code dropped it from the week bucket - and because the total
-  // was built by summing those buckets, it vanished from the total and
-  // the percentage too. The work was done and the report is in the
-  // database, but nothing on screen credited it.
-  //
-  // Now the total counts all of a technician's uploads, and anything
-  // that could not be dated is shown in its own column instead of
-  // disappearing.
+  // Count EVERY upload, then work out which can be placed in a week.
+  // A report with a missing or unreadable Generated date produces no
+  // week number; the old code dropped it from the bucket, and since the
+  // total was the sum of buckets it vanished from the total and the
+  // percentage too. The work was done and the row is in the database,
+  // but nothing on screen credited it.
   const uploadsTotal = {};
   const uploadsUndated = {};
   TECHS.forEach(t => { uploadsTotal[t] = 0; uploadsUndated[t] = 0; });
@@ -1418,11 +1280,11 @@ function renderQ3Grid(stats) {
     if (actualByTechWeek[m.uploadedBy][wn] !== undefined) {
       actualByTechWeek[m.uploadedBy][wn]++;
     } else {
-      uploadsUndated[m.uploadedBy]++;   // no date, or dated outside Aug 1 - Sep 30
+      uploadsUndated[m.uploadedBy]++;
     }
   });
 
-  let html = '<thead><tr><th>Technician</th><th>Pre-Q3 done</th><th>Q3 target</th>';
+  let html = '<thead><tr><th>Technician</th><th>Pre-Q3 done</th><th>Target</th>';
   Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
   html += '<th>Undated</th><th>Total actual</th><th>Total scope</th><th>% complete</th><th>Extra (unassigned)</th></tr></thead><tbody>';
 
@@ -1434,24 +1296,23 @@ function renderQ3Grid(stats) {
       const tgt = targetByTechWeek[t][w.n];
       const act = actualByTechWeek[t][w.n];
       techTarget += tgt;
-      // A week can exceed its quota (someone catching up), so cap the
-      // displayed percentage at 100% - the raw count is right there
-      // beside it, and a 200% cell just reads as a formatting error.
+      // A week can exceed its quota (catching up), so cap the displayed
+      // percentage at 100% - the raw count is beside it, and a 200%
+      // cell just reads as a formatting error.
       const pctW = tgt ? Math.min(100, Math.round((act / tgt) * 100)) : 0;
-      const over  = tgt && act > tgt ? ' +' + (act - tgt) : '';
+      const over = tgt && act > tgt ? ' +' + (act - tgt) : '';
       const pctColor = !tgt ? 'var(--grey)' : (act >= tgt ? 'var(--green)' : 'var(--amber)');
       weekCells += '<td style="text-align:center;">' + act + '/' + tgt +
         (tgt ? '<br><span style="color:' + pctColor + ';font-weight:bold;font-size:10px;">' + pctW + '%' + over + '</span>' : '') + '</td>';
     });
-    // Total actual counts ALL of this person's uploads - including any
-    // that could not be dated into a week - plus their pre-Q3 credit.
-    // Measured against their full scope (pre-Q3 + remaining target).
+    // Total actual counts ALL uploads - including undated ones - plus
+    // pre-quarter credit, measured against the full scope.
     const techActual = preQ3[t] + uploadsTotal[t];
     const techScope = preQ3[t] + techTarget;
     const pct = techScope ? Math.min(100, Math.round((techActual / techScope) * 100)) : 0;
     const pctColor = techActual >= techScope && techScope ? 'var(--green)' : 'var(--navy)';
     const undatedCell = uploadsUndated[t]
-      ? '<span style="color:var(--red);font-weight:bold;" title="Uploaded but the report had no readable Generated date, or it fell outside Aug 1 - Sep 30. Counted in Total actual, but cannot be placed in a week.">' + uploadsUndated[t] + '</span>'
+      ? '<span style="color:var(--red);font-weight:bold;" title="Uploaded but the report had no readable Generated date. Counted in Total actual, but cannot be placed in a week.">' + uploadsUndated[t] + '</span>'
       : '0';
     html += '<tr><td>' + escapeHtml(t) + '</td>' +
       '<td style="text-align:center;color:var(--green);font-weight:bold;">' + preQ3[t] + '</td>' +
@@ -1466,7 +1327,7 @@ function renderQ3Grid(stats) {
   });
 
   const totalScope = totals.preQ3 + totals.target;
-  const totalPct = totalScope ? Math.round((totals.actual / totalScope) * 100) : 0;
+  const totalPct = totalScope ? Math.min(100, Math.round((totals.actual / totalScope) * 100)) : 0;
   html += '<tr style="font-weight:bold;background:var(--light-grey);"><td>TOTAL</td>' +
     '<td style="text-align:center;">' + totals.preQ3 + '</td>' +
     '<td style="text-align:center;">' + totals.target + '</td>';
@@ -1487,7 +1348,6 @@ function renderQ3Grid(stats) {
   document.getElementById('qGrid').innerHTML = html;
 }
 
-// ---- Device explorer ----
 function debounce(fn, delay) {
   let t = null;
   return (...args) => {
@@ -1574,83 +1434,18 @@ function renderUploadHistory() {
   const badgeClass = s => s === 'Compliant' ? 'compliant' : (s === 'Needs Attention' ? 'attention' : (s === 'Corrupted - Needs Re-run' ? 'corrupted' : 'notfound'));
   let html = '<thead><tr><th>Generated</th><th>Uploaded by</th><th>Site</th><th>Identifier</th><th>Status</th><th>Pass</th><th>Fail</th><th>File</th><th>Report</th></tr></thead><tbody>';
   recent.forEach(m => {
-    const viewCell = (usingServer && m.id)
-      ? '<button class="secondary small" data-viewreport="' + escapeHtml(m.id) + '">View</button>'
-      : '<span class="filename">n/a</span>';
     html += '<tr><td>' + escapeHtml(m.generated) + '</td><td>' + escapeHtml(m.uploadedBy) + '</td><td>' + escapeHtml(m.site) + '</td><td>' + escapeHtml(m.identifier) + '</td>' +
       '<td><span class="badge ' + badgeClass(m.status) + '">' + escapeHtml(m.status) + '</span></td><td>' + escapeHtml(m.pass) + '</td><td>' + escapeHtml(m.fail) + '</td>' +
-      '<td class="filename">' + escapeHtml(m.file) + '</td><td>' + viewCell + '</td></tr>';
+      '<td class="filename">' + escapeHtml(m.file) + '</td><td>' +
+      ((usingServer && m.id)
+        ? '<button class="secondary small" data-viewreport="' + escapeHtml(m.id) + '">View</button>'
+        : '<span class="filename">n/a</span>') + '</td></tr>';
   });
   html += '</tbody>';
   area.innerHTML = html;
 
   area.querySelectorAll('[data-viewreport]').forEach(b =>
     b.addEventListener('click', () => openReport(b.getAttribute('data-viewreport'))));
-}
-
-// ---- Full report viewer ----
-// The report body is NOT held in memory with the rest of the state -
-// it's pulled from the database only when someone asks for it, so the
-// 30-second refresh stays small.
-let currentReport = null;
-
-async function openReport(id) {
-  const overlay  = document.getElementById('reportOverlay');
-  const titleEl  = document.getElementById('reportTitle');
-  const bodyEl   = document.getElementById('reportBody');
-  if (!overlay) return;
-
-  overlay.style.display = 'flex';
-  titleEl.textContent = 'Loading report...';
-  bodyEl.textContent = '';
-  currentReport = null;
-
-  if (!usingServer || !serverUrl || !serverKey) {
-    bodyEl.textContent = 'Not connected to the shared database.';
-    titleEl.textContent = 'Unavailable';
-    return;
-  }
-  try {
-    const base = serverUrl.replace(/\/+$/, '');
-    const row = await fetchReportText(base, serverKey, id);
-    if (!row) {
-      titleEl.textContent = 'Not found';
-      bodyEl.textContent = 'No report row with that id.';
-      return;
-    }
-    titleEl.textContent = row.file || row.identifier || 'Report';
-    if (row.reportText) {
-      bodyEl.textContent = row.reportText;
-      currentReport = { name: row.file || ((row.identifier || 'report') + '.txt'), text: row.reportText };
-    } else {
-      bodyEl.textContent =
-        'No stored text for this report.\n\n' +
-        'Reports uploaded before the reportText migration was applied only have their\n' +
-        'parsed summary saved - the original file was not kept. Everything uploaded\n' +
-        'from now on will store its full text here.';
-    }
-  } catch (err) {
-    titleEl.textContent = 'Error';
-    bodyEl.textContent = err.message;
-  }
-}
-
-function wireReportViewer() {
-  const overlay = document.getElementById('reportOverlay');
-  if (!overlay) return;
-  const close = () => { overlay.style.display = 'none'; currentReport = null; };
-  document.getElementById('reportClose').addEventListener('click', close);
-  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape' && overlay.style.display === 'flex') close(); });
-
-  document.getElementById('reportDownload').addEventListener('click', () => {
-    if (!currentReport) { showToast('Nothing to download yet.', 'warning', 'No report loaded'); return; }
-    const blob = new Blob([currentReport.text], { type: 'text/plain' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = currentReport.name;
-    a.click();
-  });
 }
 
 // ---- Personal "My Assignments" view ----
@@ -1697,7 +1492,7 @@ function renderMyAssignments(stats) {
     myUploadsTotal++;
     const wn = weekNumberFor(m.generated);
     if (actualByWeek[wn] !== undefined) actualByWeek[wn]++;
-    else myUploadsUndated++;   // unreadable Generated date, or outside Q3
+    else myUploadsUndated++;
   });
 
   const curWeekNum = currentWeekNum();
@@ -1727,16 +1522,11 @@ function renderMyAssignments(stats) {
   // even though a chunk of their scope is already finished.
   let totalTarget = 0;
   Q3_WEEKS.forEach(w => { totalTarget += targetByWeek[w.n] || 0; });
-  // Counts every upload, not just the ones that could be dated into a
-  // week - otherwise reports with an unreadable "Generated" line are
-  // silently uncredited.
+  // Counts every upload, not just datable ones - otherwise reports with
+  // an unreadable Generated line go silently uncredited.
   const overallActual = alreadyDoneCount + myUploadsTotal;
   const overallScope = alreadyDoneCount + totalTarget;
   const overallPct = overallScope ? Math.min(100, Math.round((overallActual / overallScope) * 100)) : 0;
-
-  const noteBits = [];
-  if (alreadyDoneCount) noteBits.push('<span class="badge compliant">' + alreadyDoneCount + ' pre-Q3 credited</span>');
-  if (myUploadsUndated) noteBits.push('<span class="badge attention" title="Uploaded and counted, but the report had no readable Generated date so it cannot be placed in a week.">' + myUploadsUndated + ' undated</span>');
 
   sHtml = sHtml.replace('</tbody>',
     '<tr style="font-weight:bold;background:var(--light-grey);">' +
@@ -1745,7 +1535,12 @@ function renderMyAssignments(stats) {
     '<td style="text-align:center;color:var(--green);">' + overallActual + '</td>' +
     '<td style="text-align:center;">' + Math.max(0, overallScope - overallActual) + '</td>' +
     '<td style="text-align:center;">' + overallPct + '%</td>' +
-    '<td>' + noteBits.join(' ') + '</td>' +
+    '<td>' + (function () {
+      const bits = [];
+      if (alreadyDoneCount) bits.push('<span class="badge compliant">' + alreadyDoneCount + ' pre-Q3 credited</span>');
+      if (myUploadsUndated) bits.push('<span class="badge attention" title="Uploaded and counted, but the report had no readable Generated date so it cannot be placed in a week.">' + myUploadsUndated + ' undated</span>');
+      return bits.join(' ');
+    })() + '</td>' +
     '</tr></tbody>');
   summaryArea.innerHTML = sHtml;
 
@@ -1801,12 +1596,189 @@ function renderMyAssignments(stats) {
 }
 
 // ---------------------------------------------------------------
-// Manage targets — edit device owner, reassign technician, or remove
-// a device from the target list (resigned staff, retired hardware).
-// Gated behind a second admin code so ordinary technicians keep the
-// view/upload flow untouched. Same honest caveat as the main gate:
-// this is client-side, so it's a control against accidents and casual
-// meddling, not against someone determined to bypass it.
+// Completion report - who is finished with hardening and who is not.
+// Rebuilt from live data on every click, so it is never a stale copy.
+// ---------------------------------------------------------------
+function exportCompletionReport() {
+  if (typeof XLSX === 'undefined') {
+    showToast('The spreadsheet library did not load (offline?). Reconnect and try again.', 'error', 'Export unavailable');
+    return;
+  }
+  const bySerial = machinesBySerial();
+
+  const assignBySerial = new Map();
+  allActiveAssignments().forEach(a => {
+    const k = a.endpointSerial ? String(a.endpointSerial).trim() : '';
+    if (k && !assignBySerial.has(k)) assignBySerial.set(k, a);
+  });
+
+  const done = [];
+  const pending = [];
+
+  activeRawDevices().forEach(rd => {
+    const st = liveDeviceStatus(rd, bySerial);
+    const key = rd.endpointSerial ? String(rd.endpointSerial).trim() : '';
+    const assign = key ? assignBySerial.get(key) : null;
+
+    let report = null;
+    if (key && bySerial.has(key)) {
+      const hits = bySerial.get(key).slice();
+      hits.sort((a, b) => String(b.generated || '').localeCompare(String(a.generated || '')));
+      report = hits[0];
+    }
+
+    if (st.status.indexOf('Done') === 0) {
+      done.push([
+        rd.email || '', rd.endpointHost || '', rd.endpointSerial || '', rd.model || '',
+        st.status,
+        report ? (report.generated || '') : '',
+        report ? (report.uploadedBy || 'Pre-Q3 / baseline') : 'Pre-Q3 / baseline',
+        report ? (report.pass || '') : '',
+        report ? (report.fail || '') : '',
+        assign ? assign.tech : '',
+      ]);
+    } else {
+      pending.push([
+        rd.email || '', rd.endpointHost || '', rd.endpointSerial || '', rd.model || '',
+        assign ? assign.tech : '(unassigned)',
+        assign ? assign.weekNum : '',
+        (rd.endpointHost && !PLACEHOLDERS.has(String(rd.endpointHost).trim())) ? 'Yes' : 'No',
+      ]);
+    }
+  });
+
+  const total = done.length + pending.length;
+  const pct = total ? Math.round((done.length / total) * 100) : 0;
+  const excluded = state.rawDevices.length - total;
+  const compliant = done.filter(r => r[4] === 'Done - Compliant').length;
+  const attention = done.filter(r => r[4].indexOf('Needs Attention') >= 0).length;
+  const unreadable = done.filter(r => r[4].indexOf('Unreadable') >= 0).length;
+
+  const wb = XLSX.utils.book_new();
+
+  const summary = [
+    ['CIS Hardening Completion Report'],
+    ['Generated', new Date().toLocaleString()],
+    [],
+    ['Devices in scope', total],
+    ['Finished (hardening report on file)', done.length],
+    ['Not yet finished', pending.length],
+    ['Percent complete', pct + '%'],
+    ['Excluded from scope (service/shared accounts, retired)', excluded],
+    [],
+    ['Of those finished:'],
+    ['  Compliant (no failed checks)', compliant],
+    ['  Done but needs attention (has failures)', attention],
+    ['  Done but report unreadable (re-collect)', unreadable],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summary), 'Summary');
+
+  const doneHeader = ['User Email', 'Endpoint Host', 'Serial', 'Model', 'Result',
+                      'Date Hardened', 'Hardened By', 'Pass', 'Fail', 'Assigned To'];
+  done.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([doneHeader].concat(done)), 'Finished');
+
+  const pendHeader = ['User Email', 'Endpoint Host', 'Serial', 'Model',
+                      'Assigned To', 'Target Week', 'Reachable (has hostname)'];
+  pending.sort((a, b) => String(a[4]).localeCompare(String(b[4])) || String(a[0]).localeCompare(String(b[0])));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([pendHeader].concat(pending)), 'Not Finished');
+
+  const techHeader = ['Quarter', 'Technician', 'Pre-quarter Done', 'Target', 'Uploaded',
+                      'Total Actual', 'Total Scope', 'Percent Complete'];
+  const techRows = [];
+  Object.keys(QUARTERS).forEach(q => {
+    QUARTERS[q].techs.forEach(t => {
+      let pre = 0, target = 0;
+      state.q3Assignments.forEach(a => {
+        if (isRemoved(a) || rowQuarter(a) !== q || a.tech !== t) return;
+        if (a.alreadyDone) { pre++; return; }
+        if (a.extra) return;
+        target++;
+      });
+      const uploaded = state.machines.filter(m => m.uploadedBy === t && machineQuarter(m) === q).length;
+      const actual = pre + uploaded;
+      const scope = pre + target;
+      techRows.push([q, t, pre, target, uploaded, actual, scope,
+                     (scope ? Math.min(100, Math.round((actual / scope) * 100)) : 0) + '%']);
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([techHeader].concat(techRows)), 'By Technician');
+
+  XLSX.writeFile(wb, 'CIS_Completion_Report_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  showToast(done.length + ' finished, ' + pending.length + ' still pending (' + pct + '% complete).', 'success', 'Completion report exported');
+}
+
+// ---------------------------------------------------------------
+// Full report viewer. The body is NOT held in memory with the rest of
+// the state - it is pulled only when asked for, so the 30s refresh
+// stays small.
+// ---------------------------------------------------------------
+let currentReport = null;
+
+async function openReport(id) {
+  const overlay = document.getElementById('reportOverlay');
+  const titleEl = document.getElementById('reportTitle');
+  const bodyEl  = document.getElementById('reportBody');
+  if (!overlay) return;
+
+  overlay.style.display = 'flex';
+  titleEl.textContent = 'Loading report...';
+  bodyEl.textContent = '';
+  currentReport = null;
+
+  if (!usingServer || !serverUrl || !serverKey) {
+    bodyEl.textContent = 'Not connected to the shared database.';
+    titleEl.textContent = 'Unavailable';
+    return;
+  }
+  try {
+    const base = serverUrl.replace(/\/+$/, '');
+    const row = await fetchReportText(base, serverKey, id);
+    if (!row) {
+      titleEl.textContent = 'Not found';
+      bodyEl.textContent = 'No report row with that id.';
+      return;
+    }
+    titleEl.textContent = row.file || row.identifier || 'Report';
+    if (row.reportText) {
+      bodyEl.textContent = row.reportText;
+      currentReport = { name: row.file || ((row.identifier || 'report') + '.txt'), text: row.reportText };
+    } else {
+      bodyEl.textContent =
+        'No stored text for this report.\n\n' +
+        'Reports uploaded before the reportText migration was applied only have\n' +
+        'their parsed summary saved - the original file was not kept. Everything\n' +
+        'uploaded from now on will store its full text here.';
+    }
+  } catch (err) {
+    titleEl.textContent = 'Error';
+    bodyEl.textContent = err.message;
+  }
+}
+
+function wireReportViewer() {
+  const overlay = document.getElementById('reportOverlay');
+  if (!overlay) return;
+  const close = () => { overlay.style.display = 'none'; currentReport = null; };
+  document.getElementById('reportClose').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && overlay.style.display === 'flex') close(); });
+  document.getElementById('reportDownload').addEventListener('click', () => {
+    if (!currentReport) { showToast('Nothing to download yet.', 'warning', 'No report loaded'); return; }
+    const blob = new Blob([currentReport.text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = currentReport.name;
+    a.click();
+  });
+}
+
+// ---------------------------------------------------------------
+// Manage targets - edit owner, reassign technician, or remove a device
+// from the target list. Behind a second admin code so technicians keep
+// the view/upload flow untouched. Same honest caveat as the main gate:
+// client-side, so it guards against accidents and casual meddling, not
+// a determined bypass.
 // ---------------------------------------------------------------
 const ADMIN_HASH = '5d7ad183';
 const ADMIN_UNLOCKED_KEY = 'cisAdminUnlocked_v1';
@@ -1828,7 +1800,7 @@ function wireManageTargets() {
       try { localStorage.setItem(ADMIN_UNLOCKED_KEY, '1'); } catch (e) {}
       adminInput.value = '';
       renderManageTargets();
-      showToast('Admin mode on — you can now edit or remove target rows.', 'success', 'Admin unlocked');
+      showToast('Admin mode on - you can now edit or remove target rows.', 'success', 'Admin unlocked');
     } else {
       showToast('That admin code is not correct.', 'warning', 'Still locked');
       adminInput.value = '';
@@ -1862,15 +1834,14 @@ function renderManageTargets() {
   if (!adminUnlocked) { area.innerHTML = ''; if (removedArea) removedArea.innerHTML = ''; return; }
 
   if (!usingServer) {
-    area.innerHTML = '<p class="empty">Not connected to the shared database — target changes can only be made while connected.</p>';
+    area.innerHTML = '<p class="empty">Not connected to the shared database - target changes can only be made while connected.</p>';
     if (removedArea) removedArea.innerHTML = '';
     return;
   }
 
   const q = (document.getElementById('manageSearch').value || '').trim().toLowerCase();
-  // Admin sees EVERY quarter here, not just the one being viewed - when
-  // a device needs removing you shouldn't have to guess which quarter
-  // its row lives in.
+  // Admin sees EVERY quarter here - when a device needs removing you
+  // shouldn't have to guess which quarter its row lives in.
   let rows = allActiveAssignments();
   if (q) {
     rows = rows.filter(a =>
@@ -1888,8 +1859,8 @@ function renderManageTargets() {
   } else {
     shown.forEach(a => {
       if (String(a.id) === String(manageEditingId)) {
-        // Offer whichever roster belongs to THAT row's quarter, so a Q3
-        // row can still be reassigned to Junar while Q4 rows cannot.
+        // Offer the roster for THAT row's quarter, so a Q3 row can still
+        // be reassigned to a technician who has since left.
         const roster = (QUARTERS[rowQuarter(a)] || QUARTERS.Q4).techs;
         const techOpts = roster.map(t => '<option' + (t === a.tech ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('');
         html += '<tr style="background:#EEF3F8;">' +
@@ -1919,11 +1890,10 @@ function renderManageTargets() {
   html += '</tbody>';
   area.innerHTML = html;
 
-  const totalActive = activeAssignments().length;
   const countEl = document.getElementById('manageCount');
   if (countEl) countEl.textContent = shown.length < rows.length
-    ? 'Showing first ' + shown.length + ' of ' + rows.length + ' matching rows (' + totalActive + ' active targets total).'
-    : rows.length + ' row(s) shown (' + totalActive + ' active targets total).';
+    ? 'Showing first ' + shown.length + ' of ' + rows.length + ' matching rows.'
+    : rows.length + ' row(s) shown.';
 
   area.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
     manageEditingId = b.getAttribute('data-edit');
@@ -1936,15 +1906,14 @@ function renderManageTargets() {
   area.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => saveTargetEdit(b.getAttribute('data-save'))));
   area.querySelectorAll('[data-remove]').forEach(b => b.addEventListener('click', () => removeTarget(b.getAttribute('data-remove'))));
 
-  // ---- Audit trail of removals ----
   if (removedArea) {
-    const gone = removedAssignments();
+    const gone = state.q3Assignments.filter(isRemoved);
     if (gone.length === 0) {
       removedArea.innerHTML = '<p class="empty">No devices have been removed from the target list.</p>';
     } else {
-      let rHtml = '<thead><tr><th>Technician</th><th>User email</th><th>Endpoint host</th><th>Serial</th><th>Reason</th><th>Removed by</th><th>When</th><th></th></tr></thead><tbody>';
+      let rHtml = '<thead><tr><th>Qtr</th><th>Technician</th><th>User email</th><th>Endpoint host</th><th>Serial</th><th>Reason</th><th>Removed by</th><th>When</th><th></th></tr></thead><tbody>';
       gone.slice().reverse().forEach(a => {
-        rHtml += '<tr><td>' + escapeHtml(a.tech) + '</td><td>' + escapeHtml(a.email) + '</td>' +
+        rHtml += '<tr><td>' + escapeHtml(rowQuarter(a)) + '</td><td>' + escapeHtml(a.tech) + '</td><td>' + escapeHtml(a.email) + '</td>' +
           '<td>' + escapeHtml(a.endpointHost) + '</td><td>' + escapeHtml(a.endpointSerial) + '</td>' +
           '<td>' + escapeHtml(a.removeReason || '—') + '</td>' +
           '<td>' + escapeHtml(a.removedBy || '—') + '</td>' +
@@ -1987,7 +1956,7 @@ function saveTargetEdit(id) {
     email: emailIn.value.trim(),
     updatedBy: whoAmI(),
     updatedAt: new Date().toISOString(),
-  }, 'Target updated — owner and technician saved for everyone.');
+  }, 'Target updated - owner and technician saved for everyone.');
 }
 
 function removeTarget(id) {
@@ -2000,7 +1969,7 @@ function removeTarget(id) {
     removedBy: whoAmI(),
     removedAt: new Date().toISOString(),
     removeReason: reason.trim() || 'No reason given',
-  }, '"' + label + '" removed from targets — it no longer counts toward anyone\'s numbers.');
+  }, '"' + label + '" removed from targets - it no longer counts toward anyone\'s numbers.');
 }
 
 function restoreTarget(id) {
