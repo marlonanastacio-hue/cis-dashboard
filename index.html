@@ -182,6 +182,15 @@
       <p class="sub" style="margin-bottom:8px;">Change a device's owner email, move it to a different technician, or remove it from the targets when someone resigns or hardware is returned. Removed devices stop counting toward everyone's target and percentage, and are listed with who removed them below.</p>
       <div class="filterbar">
         <input type="text" id="manageSearch" placeholder="Search email, host, serial, technician&hellip;" style="flex:1; min-width:220px;">
+        <select id="manageStatusFilter">
+          <option value="pending">Still to do</option>
+          <option value="done">Done</option>
+          <option value="all">All</option>
+        </select>
+        <select id="manageQuarterFilter">
+          <option value="current">Quarter shown below</option>
+          <option value="all">All quarters</option>
+        </select>
         <button class="secondary small" id="adminLockBtn">Lock admin</button>
       </div>
       <p class="sub" id="manageCount" style="margin:0 0 8px;"></p>
@@ -326,6 +335,20 @@ function weekNumberFor(generatedStr) {
   const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   for (const w of Q3_WEEKS) if (day >= w.s && day <= w.e) return w.n;
   return 'Outside Q3';
+}
+
+// Week number inside the REPORT's own quarter, independent of which
+// quarter happens to be on screen while uploading.
+function reportQuarter(generatedStr) {
+  return machineQuarter({ generated: generatedStr }) || liveQuarter();
+}
+function weekNumberIn(q, generatedStr) {
+  if (!generatedStr || !QUARTERS[q]) return '';
+  const d = new Date(generatedStr);
+  if (isNaN(d)) return '';
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  for (const w of QUARTERS[q].weeks) if (day >= w.s && day <= w.e) return w.n;
+  return '';
 }
 
 function currentWeekNum() {
@@ -576,14 +599,76 @@ function machinesBySerial() {
   return map;
 }
 
+// ---------------------------------------------------------------
+// ONE answer to "has this device been hardened?", used by every list,
+// counter and export so they can never disagree.
+//
+// Matching by serial alone missed a lot: desktops report placeholder
+// serials ("Default string", "System Serial Number"), and the inventory
+// often only has a hostname. So: serial first, then hostname - either
+// the new name the script gave it (identifier) or the name it had
+// before the rename (the start of the "computer" field).
+// ---------------------------------------------------------------
+const HOST_PLACEHOLDERS = new Set(['', '0', 'N/A', 'NA', 'NONE', 'UNKNOWN', 'DEFAULT STRING']);
+function normHost(h) { return String(h === null || h === undefined ? '' : h).trim().toUpperCase(); }
+function usableHost(h) { return !HOST_PLACEHOLDERS.has(normHost(h)); }
+function usableSerial(s) { return s !== null && s !== undefined && !PLACEHOLDERS.has(String(s).trim()) && String(s).trim() !== '0'; }
+function originalHostOf(m) {
+  const c = String(m.computer || '');
+  const i = c.indexOf(' (');
+  return (i >= 0 ? c.slice(0, i) : c).trim();
+}
+// A manual note like "Not Hardened - No Charger" is not proof of work.
+function countsAsHardened(m) { return m && String(m.status || '').indexOf('Not Hardened') !== 0; }
+
+let _matchIdx = null, _matchIdxFor = null, _matchIdxLen = -1;
+function matchIndex() {
+  if (_matchIdx && _matchIdxFor === state.machines && _matchIdxLen === state.machines.length) return _matchIdx;
+  const bySerial = new Map(), byHost = new Map();
+  const add = (map, k, m) => { if (!map.has(k)) map.set(k, []); map.get(k).push(m); };
+  state.machines.forEach(m => {
+    if (!countsAsHardened(m)) return;
+    if (usableSerial(m.serial)) add(bySerial, String(m.serial).trim(), m);
+    const hosts = new Set([normHost(m.identifier), normHost(originalHostOf(m))]);
+    hosts.forEach(h => { if (usableHost(h)) add(byHost, h, m); });
+  });
+  const newest = list => list.slice().sort((a, b) =>
+    (Date.parse(b.generated) || 0) - (Date.parse(a.generated) || 0))[0];
+  _matchIdx = { bySerial, byHost, newest };
+  _matchIdxFor = state.machines; _matchIdxLen = state.machines.length;
+  return _matchIdx;
+}
+
+// Returns { report, how } or null. Works for raw_devices rows and
+// q3_assignments rows alike (both carry endpointSerial / endpointHost).
+function findReport(row) {
+  if (!row) return null;
+  const idx = matchIndex();
+  if (usableSerial(row.endpointSerial)) {
+    const hits = idx.bySerial.get(String(row.endpointSerial).trim());
+    if (hits && hits.length) return { report: idx.newest(hits), how: 'serial' };
+  }
+  if (usableHost(row.endpointHost)) {
+    const hits = idx.byHost.get(normHost(row.endpointHost));
+    if (hits && hits.length) return { report: idx.newest(hits), how: 'hostname' };
+  }
+  return null;
+}
+
+// Is a TARGET row finished? Pre-quarter credit counts as finished too.
+function assignmentDone(a) {
+  if (a && a.alreadyDone) return { report: null, how: 'pre-quarter' };
+  return findReport(a);
+}
+
 function liveDeviceStatus(rd, bySerial) {
   if (rd.cisStatus && String(rd.cisStatus).indexOf('Done') === 0) {
     return { status: rd.cisStatus, live: false };
   }
-  if (rd.endpointSerial && !PLACEHOLDERS.has(String(rd.endpointSerial).trim())) {
-    const hits = bySerial.get(String(rd.endpointSerial).trim());
-    if (hits && hits.length) {
-      const m = hits[0];
+  {
+    const found = findReport(rd);
+    if (found) {
+      const m = found.report;
       // A report that could not be parsed still proves the machine was
       // hardened, so it counts as done - but it is NOT called
       // "Compliant", because nobody can read whether the checks passed.
@@ -810,7 +895,12 @@ async function connectToServer(url, key, silent) {
 
 function stateFingerprint(s) {
   const lastM = s.machines[s.machines.length - 1];
-  return s.rawDevices.length + '|' + s.machines.length + '|' + s.q3Assignments.length + '|' + (lastM ? lastM.file + ':' + lastM.generated : '');
+  // Edits (remove / restore / reassign) change no row counts, so fold
+  // them in too - otherwise another admin's change never redraws here.
+  let edits = 0;
+  s.q3Assignments.forEach(a => { edits += (isRemoved(a) ? 1 : 0) + String(a.updatedAt || '').length + String(a.tech || '').length; });
+  s.rawDevices.forEach(rd => { edits += isRemoved(rd) ? 1 : 0; });
+  return s.rawDevices.length + '|' + s.machines.length + '|' + s.q3Assignments.length + '|' + edits + '|' + (lastM ? lastM.file + ':' + lastM.generated : '');
 }
 
 let lastFingerprint = null;
@@ -1016,7 +1106,8 @@ function wireUploader() {
             return;
           }
           parsed.uploadedBy = uploader;
-          parsed.weekNum = weekNumberFor(parsed.generated);
+          parsed.quarter = reportQuarter(parsed.generated);
+          parsed.weekNum = weekNumberIn(parsed.quarter, parsed.generated);
           uploadRows.push(parsed);
           await mergeIntoState(parsed, uploader);
           renderUploadTable();
@@ -1042,7 +1133,14 @@ async function mergeIntoState(parsed, uploader) {
   };
 
   const key = parsed.serial ? String(parsed.serial).trim() : '';
-  const knownDevice = key && state.rawDevices.some(rd => rd.endpointSerial && String(rd.endpointSerial).trim() === key);
+  // Known if the serial OR either hostname (old or new) is already in
+  // the inventory - otherwise desktops with placeholder serials kept
+  // getting duplicated as "new machines".
+  const hostKeys = [normHost(parsed.identifier), normHost(originalHostOf(parsed))].filter(usableHost);
+  const knownDevice =
+    (usableSerial(key) && state.rawDevices.some(rd => rd.endpointSerial && String(rd.endpointSerial).trim() === key)) ||
+    state.rawDevices.some(rd => usableHost(rd.endpointHost) && hostKeys.indexOf(normHost(rd.endpointHost)) >= 0) ||
+    (!usableSerial(key) && !hostKeys.length);
 
   let newRawDevice = null;
   let newQ3Row = null;
@@ -1059,7 +1157,7 @@ async function mergeIntoState(parsed, uploader) {
     newQ3Row = {
       tech: uploader, weekNum: parsed.weekNum, weekDates: '', email: '(new machine)', model: parsed.computer,
       mac: '', endpointHost: parsed.identifier, endpointSerial: parsed.serial,
-      alreadyDone: false, extra: true,
+      alreadyDone: false, extra: true, quarter: parsed.quarter || liveQuarter(),
     };
   }
 
@@ -1256,9 +1354,12 @@ function renderQ3Grid(stats) {
     Q3_WEEKS.forEach(w => { targetByTechWeek[t][w.n] = 0; actualByTechWeek[t][w.n] = 0; });
   });
 
+  const stillToDo = {};
+  TECHS.forEach(t => { stillToDo[t] = 0; });
   activeAssignments().forEach(a => {
     if (!targetByTechWeek[a.tech]) return;
     if (a.alreadyDone) { preQ3[a.tech]++; return; }
+    if (!a.extra && !findReport(a)) stillToDo[a.tech]++;
     if (a.extra) { extra[a.tech]++; return; }
     if (targetByTechWeek[a.tech][a.weekNum] !== undefined) targetByTechWeek[a.tech][a.weekNum]++;
   });
@@ -1286,9 +1387,9 @@ function renderQ3Grid(stats) {
 
   let html = '<thead><tr><th>Technician</th><th>Pre-Q3 done</th><th>Target</th>';
   Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
-  html += '<th>Undated</th><th>Total actual</th><th>Total scope</th><th>% complete</th><th>Extra (unassigned)</th></tr></thead><tbody>';
+  html += '<th>Undated</th><th>Total actual</th><th>Total scope</th><th>% complete</th><th title="Assigned devices with no hardening report on file yet">Still to do</th><th>Extra (unassigned)</th></tr></thead><tbody>';
 
-  const totals = { preQ3: 0, target: 0, actual: 0, extra: 0, undated: 0 };
+  const totals = { preQ3: 0, target: 0, actual: 0, extra: 0, undated: 0, todo: 0 };
   TECHS.forEach(t => {
     let techTarget = 0;
     let weekCells = '';
@@ -1321,9 +1422,10 @@ function renderQ3Grid(stats) {
       '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techActual + '</td>' +
       '<td style="text-align:center;">' + techScope + '</td>' +
       '<td style="text-align:center;font-weight:bold;color:' + pctColor + ';">' + pct + '%</td>' +
+      '<td style="text-align:center;font-weight:bold;color:' + (stillToDo[t] ? 'var(--amber)' : 'var(--green)') + ';">' + stillToDo[t] + '</td>' +
       '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td></tr>';
     totals.preQ3 += preQ3[t]; totals.target += techTarget; totals.actual += techActual;
-    totals.extra += extra[t]; totals.undated += uploadsUndated[t];
+    totals.extra += extra[t]; totals.undated += uploadsUndated[t]; totals.todo += stillToDo[t];
   });
 
   const totalScope = totals.preQ3 + totals.target;
@@ -1343,6 +1445,7 @@ function renderQ3Grid(stats) {
     '<td style="text-align:center;">' + totals.actual + '</td>' +
     '<td style="text-align:center;">' + totalScope + '</td>' +
     '<td style="text-align:center;">' + totalPct + '%</td>' +
+    '<td style="text-align:center;">' + totals.todo + '</td>' +
     '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td></tr>';
   html += '</tbody>';
   document.getElementById('qGrid').innerHTML = html;
@@ -1499,7 +1602,7 @@ function renderMyAssignments(stats) {
   const curWeek = Q3_WEEKS.find(w => w.n === curWeekNum);
   let sHtml = '<thead><tr><th>Current week</th><th>Target</th><th>Actual</th><th>Remaining</th><th>%</th><th>Status</th></tr></thead><tbody>';
   if (!curWeek) {
-    sHtml += '<tr><td colspan="6" class="empty">Today\'s date falls outside the Q3 tracking window (Aug 1 \u2013 Sep 30, 2026).</td></tr>';
+    sHtml += '<tr><td colspan="6" class="empty">Today falls outside ' + escapeHtml(QUARTERS[currentQuarter].label) + ' - switch quarters in the Weekly targets section.</td></tr>';
   } else {
     const target = targetByWeek[curWeek.n] || 0;
     const actual = actualByWeek[curWeek.n] || 0;
@@ -1530,7 +1633,7 @@ function renderMyAssignments(stats) {
 
   sHtml = sHtml.replace('</tbody>',
     '<tr style="font-weight:bold;background:var(--light-grey);">' +
-    '<td>All of Q3 (incl. pre-Q3)</td>' +
+    '<td>All of ' + currentQuarter + ' (incl. pre-quarter)</td>' +
     '<td style="text-align:center;">' + overallScope + '</td>' +
     '<td style="text-align:center;color:var(--green);">' + overallActual + '</td>' +
     '<td style="text-align:center;">' + Math.max(0, overallScope - overallActual) + '</td>' +
@@ -1549,7 +1652,10 @@ function renderMyAssignments(stats) {
   if (extraCount) capBits.push('+' + extraCount + ' extra credited');
   const capEl = document.getElementById('myAssignmentsCaption');
   if (capEl) {
-    capEl.textContent = 'Any device counts toward your target — pick from the pending pool below.'
+    const myTodo = mine.filter(a => !a.extra && !a.alreadyDone && !findReport(a)).length;
+    const myDone = mine.filter(a => !a.extra && !a.alreadyDone && findReport(a)).length;
+    capEl.textContent = 'Your assigned devices this quarter: ' + myTodo + ' still to do, ' + myDone + ' already done (by anyone). '
+      + 'Any device counts toward your target — pick from the pending pool below; yours are listed first.'
       + (capBits.length ? ' (' + capBits.join(' · ') + ')' : '');
   }
 
@@ -1620,12 +1726,8 @@ function exportCompletionReport() {
     const key = rd.endpointSerial ? String(rd.endpointSerial).trim() : '';
     const assign = key ? assignBySerial.get(key) : null;
 
-    let report = null;
-    if (key && bySerial.has(key)) {
-      const hits = bySerial.get(key).slice();
-      hits.sort((a, b) => String(b.generated || '').localeCompare(String(a.generated || '')));
-      report = hits[0];
-    }
+    const found = findReport(rd);
+    const report = found ? found.report : null;
 
     if (st.status.indexOf('Done') === 0) {
       done.push([
@@ -1820,6 +1922,20 @@ function wireManageTargets() {
   });
 
   if (search) search.addEventListener('input', debounce(() => renderManageTargets(), 180));
+  ['manageStatusFilter', 'manageQuarterFilter'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => renderManageTargets());
+  });
+}
+
+function doneBadge(found) {
+  if (!found) return '<span class="badge attention">To do</span>';
+  if (found.how === 'pre-quarter') return '<span class="badge compliant">Done (pre-quarter)</span>';
+  const m = found.report || {};
+  const who = m.uploadedBy ? ' by ' + escapeHtml(m.uploadedBy) : '';
+  const when = m.generated ? ' ' + escapeHtml(String(m.generated).slice(0, 10)) : '';
+  return '<span class="badge compliant" title="Matched by ' + escapeHtml(found.how) + ' to ' + escapeHtml(m.file || m.identifier || '') + '">Done</span>' +
+    '<div class="filename">' + escapeHtml(m.identifier || '') + who + when + '</div>';
 }
 
 function renderManageTargets() {
@@ -1842,7 +1958,15 @@ function renderManageTargets() {
   const q = (document.getElementById('manageSearch').value || '').trim().toLowerCase();
   // Admin sees EVERY quarter here - when a device needs removing you
   // shouldn't have to guess which quarter its row lives in.
-  let rows = allActiveAssignments();
+  const statusFilter = (document.getElementById('manageStatusFilter') || {}).value || 'pending';
+  const quarterFilter = (document.getElementById('manageQuarterFilter') || {}).value || 'current';
+  let rows = quarterFilter === 'all' ? allActiveAssignments() : activeAssignments();
+  const doneMap = new Map();
+  rows.forEach(a => doneMap.set(a, assignmentDone(a)));
+  const pendingCount = rows.filter(a => !doneMap.get(a)).length;
+  const doneCount = rows.length - pendingCount;
+  if (statusFilter === 'pending') rows = rows.filter(a => !doneMap.get(a));
+  else if (statusFilter === 'done') rows = rows.filter(a => doneMap.get(a));
   if (q) {
     rows = rows.filter(a =>
       (a.email || '').toLowerCase().includes(q) ||
@@ -1853,9 +1977,9 @@ function renderManageTargets() {
   }
   const shown = rows.slice(0, 100);
 
-  let html = '<thead><tr><th>Qtr</th><th>Technician</th><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Serial</th><th style="width:190px;">Actions</th></tr></thead><tbody>';
+  let html = '<thead><tr><th>Qtr</th><th>Status</th><th>Technician</th><th>Week</th><th>User email</th><th>Model</th><th>Endpoint host</th><th>Serial</th><th style="width:190px;">Actions</th></tr></thead><tbody>';
   if (shown.length === 0) {
-    html += '<tr><td colspan="8" class="empty">' + (q ? 'No target rows match "' + escapeHtml(q) + '".' : 'No target rows.') + '</td></tr>';
+    html += '<tr><td colspan="9" class="empty">' + (q ? 'No target rows match "' + escapeHtml(q) + '".' : (statusFilter === 'pending' ? 'Nothing left to do in this view.' : 'No target rows.')) + '</td></tr>';
   } else {
     shown.forEach(a => {
       if (String(a.id) === String(manageEditingId)) {
@@ -1865,6 +1989,7 @@ function renderManageTargets() {
         const techOpts = roster.map(t => '<option' + (t === a.tech ? ' selected' : '') + '>' + escapeHtml(t) + '</option>').join('');
         html += '<tr style="background:#EEF3F8;">' +
           '<td>' + escapeHtml(rowQuarter(a)) + '</td>' +
+          '<td>' + doneBadge(doneMap.get(a)) + '</td>' +
           '<td><select id="editTech" style="font-size:11px;padding:3px;max-width:130px;">' + techOpts + '</select></td>' +
           '<td>' + escapeHtml(a.weekNum) + '</td>' +
           '<td><input id="editEmail" type="text" value="' + escapeHtml(a.email) + '" style="font-size:11px;padding:3px;width:100%;min-width:150px;"></td>' +
@@ -1876,6 +2001,7 @@ function renderManageTargets() {
       } else {
         html += '<tr>' +
           '<td>' + escapeHtml(rowQuarter(a)) + '</td>' +
+          '<td>' + doneBadge(doneMap.get(a)) + '</td>' +
           '<td>' + escapeHtml(a.tech) + '</td>' +
           '<td>' + escapeHtml(a.weekNum) + '</td>' +
           '<td>' + escapeHtml(a.email) + '</td>' +
@@ -1891,9 +2017,11 @@ function renderManageTargets() {
   area.innerHTML = html;
 
   const countEl = document.getElementById('manageCount');
-  if (countEl) countEl.textContent = shown.length < rows.length
-    ? 'Showing first ' + shown.length + ' of ' + rows.length + ' matching rows.'
-    : rows.length + ' row(s) shown.';
+  if (countEl) countEl.textContent =
+    (quarterFilter === 'all' ? 'All quarters' : currentQuarter) + ': ' + pendingCount + ' still to do, ' + doneCount + ' done. ' +
+    (shown.length < rows.length
+      ? 'Showing first ' + shown.length + ' of ' + rows.length + ' rows in this view.'
+      : rows.length + ' row(s) in this view.');
 
   area.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
     manageEditingId = b.getAttribute('data-edit');
