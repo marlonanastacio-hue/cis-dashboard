@@ -165,7 +165,7 @@
         <button class="secondary small" id="quarterQ4Btn">Q4</button>
       </div>
     </div>
-    <p class="sub" style="margin-bottom:8px;">Each week cell shows <strong>actual / target</strong> and the resulting percentage. Actual counts reports a technician uploaded that week on any device.</p>
+    <p class="sub" style="margin-bottom:8px;">Each week cell shows the <strong>actual %</strong> of that week's assigned devices that are done, with done / assigned and how many are left underneath. A device is deducted automatically as soon as a hardening report for it is on file (uploaded by anyone), or when it is removed in Manage targets. <span style="color:var(--red);font-weight:bold;">Red</span> = week is over and devices are overdue; <span style="color:var(--amber);font-weight:bold;">amber</span> = this week; &#10003; = 100%, nothing left. &#8593; = reports uploaded that week. "Uploaded" credits each technician's own reports on any device.</p>
     <div class="qgrid-wrap"><table id="qGrid"></table></div>
   </div>
 
@@ -1335,117 +1335,120 @@ function renderQuarterChrome() {
   });
 }
 
+// Week timing relative to today: 'past' | 'current' | 'future'.
+function weekPhase(w) {
+  const t = new Date(); const today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  if (w.e < today) return 'past';
+  if (w.s > today) return 'future';
+  return 'current';
+}
+
+// Per technician per week: how many devices were assigned, how many are
+// already done (by anyone - a report on file), and how many are LEFT.
+// Removed rows are never counted (activeAssignments drops them), so a
+// device taken out in Manage targets disappears from the target too.
+function targetBreakdown(techFilter) {
+  const out = {};
+  const ensure = t => {
+    if (!out[t]) {
+      out[t] = { pre: 0, extra: 0, weeks: {} };
+      Q3_WEEKS.forEach(w => { out[t].weeks[w.n] = { assigned: 0, done: 0, left: 0 }; });
+    }
+    return out[t];
+  };
+  TECHS.forEach(ensure);
+  activeAssignments().forEach(a => {
+    if (techFilter && a.tech !== techFilter) return;
+    if (!out[a.tech] && !techFilter) return;
+    const b = ensure(a.tech);
+    if (a.alreadyDone) { b.pre++; return; }
+    if (a.extra) { b.extra++; return; }
+    const cell = b.weeks[a.weekNum];
+    if (!cell) return;
+    cell.assigned++;
+    if (findReport(a)) cell.done++; else cell.left++;
+  });
+  return out;
+}
+
+function weekCellHtml(c, w, bold, uploaded) {
+  const upLine = uploaded ? '<br><span class="filename" title="Reports uploaded this week (any device)">&#8593;' + uploaded + ' uploaded</span>' : '';
+  if (!c.assigned) return '<td style="text-align:center;color:var(--grey);">&mdash;' + upLine + '</td>';
+  const pct = Math.round((c.done / c.assigned) * 100);
+  const phase = weekPhase(w);
+  let color, label;
+  if (c.left === 0) { color = 'var(--green)'; label = pct + '% &#10003;'; }
+  else if (phase === 'past') { color = 'var(--red)'; label = pct + '%'; }
+  else if (phase === 'current') { color = 'var(--amber)'; label = pct + '%'; }
+  else { color = c.done ? 'var(--navy)' : 'var(--grey)'; label = pct + '%'; }
+  const tip = c.done + ' of ' + c.assigned + ' assigned already done' +
+    (c.left && phase === 'past' ? ' - week is over, these are overdue' : '');
+  return '<td style="text-align:center;' + (phase === 'current' ? 'background:#FFF7E6;' : '') + '" title="' + tip + '">' +
+    '<span style="color:' + color + ';font-weight:bold;font-size:13px;">' + label + '</span>' +
+    '<br><span class="filename">' + c.done + '/' + c.assigned + ' done' + (c.left ? ' &middot; ' + c.left + ' left' : '') + '</span>' +
+    upLine + '</td>';
+}
+
 function renderQ3Grid(stats) {
   renderQuarterChrome();
 
-  // Targets are an open quota: assigned rows SET each tech's weekly
-  // target, but "actual" counts what they actually completed - their
-  // uploaded reports, on any device, PLUS pre-quarter credit (hardened
-  // before this dashboard existed, so no report carries their name).
-  const targetByTechWeek = {};
-  const actualByTechWeek = {};
-  const preQ3 = {};
-  const extra = {};
-  TECHS.forEach(t => {
-    targetByTechWeek[t] = {};
-    actualByTechWeek[t] = {};
-    preQ3[t] = 0;
-    extra[t] = 0;
-    Q3_WEEKS.forEach(w => { targetByTechWeek[t][w.n] = 0; actualByTechWeek[t][w.n] = 0; });
-  });
+  const bd = targetBreakdown();
 
-  const stillToDo = {};
-  TECHS.forEach(t => { stillToDo[t] = 0; });
-  activeAssignments().forEach(a => {
-    if (!targetByTechWeek[a.tech]) return;
-    if (a.alreadyDone) { preQ3[a.tech]++; return; }
-    if (!a.extra && !findReport(a)) stillToDo[a.tech]++;
-    if (a.extra) { extra[a.tech]++; return; }
-    if (targetByTechWeek[a.tech][a.weekNum] !== undefined) targetByTechWeek[a.tech][a.weekNum]++;
-  });
-
-  // Count EVERY upload, then work out which can be placed in a week.
-  // A report with a missing or unreadable Generated date produces no
-  // week number; the old code dropped it from the bucket, and since the
-  // total was the sum of buckets it vanished from the total and the
-  // percentage too. The work was done and the row is in the database,
-  // but nothing on screen credited it.
-  const uploadsTotal = {};
-  const uploadsUndated = {};
-  TECHS.forEach(t => { uploadsTotal[t] = 0; uploadsUndated[t] = 0; });
-
+  // Uploads are still credited separately - it's the technician's own
+  // effort, on any device, assigned or not.
+  const uploadsTotal = {}, uploadsUndated = {}, uploadsByWeek = {}, uploadsWeekTotal = {};
+  Q3_WEEKS.forEach(w => { uploadsWeekTotal[w.n] = 0; });
+  TECHS.forEach(t => { uploadsTotal[t] = 0; uploadsUndated[t] = 0; uploadsByWeek[t] = {}; });
   machinesForQuarter().forEach(m => {
-    if (!m.uploadedBy || !actualByTechWeek[m.uploadedBy]) return;
+    if (!m.uploadedBy || uploadsTotal[m.uploadedBy] === undefined) return;
     uploadsTotal[m.uploadedBy]++;
     const wn = weekNumberFor(m.generated);
-    if (actualByTechWeek[m.uploadedBy][wn] !== undefined) {
-      actualByTechWeek[m.uploadedBy][wn]++;
-    } else {
-      uploadsUndated[m.uploadedBy]++;
-    }
+    if (typeof wn === 'number') {
+      uploadsByWeek[m.uploadedBy][wn] = (uploadsByWeek[m.uploadedBy][wn] || 0) + 1;
+      uploadsWeekTotal[wn]++;
+    } else uploadsUndated[m.uploadedBy]++;
   });
 
-  let html = '<thead><tr><th>Technician</th><th>Pre-Q3 done</th><th>Target</th>';
+  let html = '<thead><tr><th>Technician</th><th title="Devices still not done, after deducting finished and removed ones">Target left</th><th>Done</th><th>Total scope</th><th>% complete</th>';
   Q3_WEEKS.forEach(w => html += '<th>' + fmtWeekLabel(w) + '</th>');
-  html += '<th>Undated</th><th>Total actual</th><th>Total scope</th><th>% complete</th><th title="Assigned devices with no hardening report on file yet">Still to do</th><th>Extra (unassigned)</th></tr></thead><tbody>';
+  html += '<th title="Reports this technician uploaded this quarter, on any device">Uploaded</th><th>Undated</th><th>Extra (unassigned)</th></tr></thead><tbody>';
 
-  const totals = { preQ3: 0, target: 0, actual: 0, extra: 0, undated: 0, todo: 0 };
+  const totals = { left: 0, done: 0, scope: 0, uploads: 0, undated: 0, extra: 0 };
+  const weekTotals = {};
+  Q3_WEEKS.forEach(w => { weekTotals[w.n] = { assigned: 0, done: 0, left: 0 }; });
+
   TECHS.forEach(t => {
-    let techTarget = 0;
-    let weekCells = '';
+    const b = bd[t];
+    let left = 0, done = b.pre, scope = b.pre, cells = '';
     Q3_WEEKS.forEach(w => {
-      const tgt = targetByTechWeek[t][w.n];
-      const act = actualByTechWeek[t][w.n];
-      techTarget += tgt;
-      // A week can exceed its quota (catching up), so cap the displayed
-      // percentage at 100% - the raw count is beside it, and a 200%
-      // cell just reads as a formatting error.
-      const pctW = tgt ? Math.min(100, Math.round((act / tgt) * 100)) : 0;
-      const over = tgt && act > tgt ? ' +' + (act - tgt) : '';
-      const pctColor = !tgt ? 'var(--grey)' : (act >= tgt ? 'var(--green)' : 'var(--amber)');
-      weekCells += '<td style="text-align:center;">' + act + '/' + tgt +
-        (tgt ? '<br><span style="color:' + pctColor + ';font-weight:bold;font-size:10px;">' + pctW + '%' + over + '</span>' : '') + '</td>';
+      const c = b.weeks[w.n];
+      left += c.left; done += c.done; scope += c.assigned;
+      weekTotals[w.n].assigned += c.assigned; weekTotals[w.n].done += c.done; weekTotals[w.n].left += c.left;
+      cells += weekCellHtml(c, w, false, uploadsByWeek[t][w.n] || 0);
     });
-    // Total actual counts ALL uploads - including undated ones - plus
-    // pre-quarter credit, measured against the full scope.
-    const techActual = preQ3[t] + uploadsTotal[t];
-    const techScope = preQ3[t] + techTarget;
-    const pct = techScope ? Math.min(100, Math.round((techActual / techScope) * 100)) : 0;
-    const pctColor = techActual >= techScope && techScope ? 'var(--green)' : 'var(--navy)';
-    const undatedCell = uploadsUndated[t]
-      ? '<span style="color:var(--red);font-weight:bold;" title="Uploaded but the report had no readable Generated date. Counted in Total actual, but cannot be placed in a week.">' + uploadsUndated[t] + '</span>'
-      : '0';
+    const pct = scope ? Math.round((done / scope) * 100) : 0;
     html += '<tr><td>' + escapeHtml(t) + '</td>' +
-      '<td style="text-align:center;color:var(--green);font-weight:bold;">' + preQ3[t] + '</td>' +
-      '<td style="text-align:center;font-weight:bold;">' + techTarget + '</td>' + weekCells +
-      '<td style="text-align:center;">' + undatedCell + '</td>' +
-      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + techActual + '</td>' +
-      '<td style="text-align:center;">' + techScope + '</td>' +
-      '<td style="text-align:center;font-weight:bold;color:' + pctColor + ';">' + pct + '%</td>' +
-      '<td style="text-align:center;font-weight:bold;color:' + (stillToDo[t] ? 'var(--amber)' : 'var(--green)') + ';">' + stillToDo[t] + '</td>' +
-      '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (extra[t] ? '+' + extra[t] : '0') + '</td></tr>';
-    totals.preQ3 += preQ3[t]; totals.target += techTarget; totals.actual += techActual;
-    totals.extra += extra[t]; totals.undated += uploadsUndated[t]; totals.todo += stillToDo[t];
+      '<td style="text-align:center;font-weight:bold;font-size:13px;color:' + (left ? 'var(--amber)' : 'var(--green)') + ';">' + left + '</td>' +
+      '<td style="text-align:center;color:var(--green);font-weight:bold;" title="' + b.pre + ' pre-quarter credit included">' + done + '</td>' +
+      '<td style="text-align:center;">' + scope + '</td>' +
+      '<td style="text-align:center;font-weight:bold;color:' + (scope && !left ? 'var(--green)' : 'var(--navy)') + ';">' + pct + '%</td>' +
+      cells +
+      '<td style="text-align:center;font-weight:bold;">' + uploadsTotal[t] + '</td>' +
+      '<td style="text-align:center;' + (uploadsUndated[t] ? 'color:var(--red);font-weight:bold;' : '') + '">' + uploadsUndated[t] + '</td>' +
+      '<td style="text-align:center;color:var(--navy);font-weight:bold;">' + (b.extra ? '+' + b.extra : '0') + '</td></tr>';
+    totals.left += left; totals.done += done; totals.scope += scope;
+    totals.uploads += uploadsTotal[t]; totals.undated += uploadsUndated[t]; totals.extra += b.extra;
   });
 
-  const totalScope = totals.preQ3 + totals.target;
-  const totalPct = totalScope ? Math.min(100, Math.round((totals.actual / totalScope) * 100)) : 0;
+  const totalPct = totals.scope ? Math.round((totals.done / totals.scope) * 100) : 0;
   html += '<tr style="font-weight:bold;background:var(--light-grey);"><td>TOTAL</td>' +
-    '<td style="text-align:center;">' + totals.preQ3 + '</td>' +
-    '<td style="text-align:center;">' + totals.target + '</td>';
-  Q3_WEEKS.forEach(w => {
-    let wt = 0, wa = 0;
-    TECHS.forEach(t => { wt += targetByTechWeek[t][w.n]; wa += actualByTechWeek[t][w.n]; });
-    const pctW = wt ? Math.min(100, Math.round((wa / wt) * 100)) : 0;
-    const pctColor = !wt ? 'var(--grey)' : (wa >= wt ? 'var(--green)' : 'var(--amber)');
-    html += '<td style="text-align:center;">' + wa + '/' + wt +
-      (wt ? '<br><span style="color:' + pctColor + ';font-size:10px;">' + pctW + '%</span>' : '') + '</td>';
-  });
-  html += '<td style="text-align:center;' + (totals.undated ? 'color:var(--red);' : '') + '">' + totals.undated + '</td>' +
-    '<td style="text-align:center;">' + totals.actual + '</td>' +
-    '<td style="text-align:center;">' + totalScope + '</td>' +
-    '<td style="text-align:center;">' + totalPct + '%</td>' +
-    '<td style="text-align:center;">' + totals.todo + '</td>' +
+    '<td style="text-align:center;">' + totals.left + '</td>' +
+    '<td style="text-align:center;">' + totals.done + '</td>' +
+    '<td style="text-align:center;">' + totals.scope + '</td>' +
+    '<td style="text-align:center;">' + totalPct + '%</td>';
+  Q3_WEEKS.forEach(w => { html += weekCellHtml(weekTotals[w.n], w, true, uploadsWeekTotal[w.n]); });
+  html += '<td style="text-align:center;">' + totals.uploads + '</td>' +
+    '<td style="text-align:center;">' + totals.undated + '</td>' +
     '<td style="text-align:center;">' + (totals.extra ? '+' + totals.extra : '0') + '</td></tr>';
   html += '</tbody>';
   document.getElementById('qGrid').innerHTML = html;
@@ -1598,53 +1601,53 @@ function renderMyAssignments(stats) {
     else myUploadsUndated++;
   });
 
+  const myBd = targetBreakdown(tech)[tech] || { pre: 0, extra: 0, weeks: {} };
   const curWeekNum = currentWeekNum();
   const curWeek = Q3_WEEKS.find(w => w.n === curWeekNum);
-  let sHtml = '<thead><tr><th>Current week</th><th>Target</th><th>Actual</th><th>Remaining</th><th>%</th><th>Status</th></tr></thead><tbody>';
+  // Anything left over from weeks that already ended is overdue and
+  // rolls into what needs doing now.
+  let overdue = 0;
+  Q3_WEEKS.forEach(w => { if (weekPhase(w) === 'past' && myBd.weeks[w.n]) overdue += myBd.weeks[w.n].left; });
+
+  let sHtml = '<thead><tr><th>Week</th><th>Assigned</th><th>Already done</th><th>Left</th><th>Actual %</th><th>Uploaded by you</th><th>Status</th></tr></thead><tbody>';
   if (!curWeek) {
-    sHtml += '<tr><td colspan="6" class="empty">Today falls outside ' + escapeHtml(QUARTERS[currentQuarter].label) + ' - switch quarters in the Weekly targets section.</td></tr>';
+    sHtml += '<tr><td colspan="7" class="empty">Today falls outside ' + escapeHtml(QUARTERS[currentQuarter].label) + ' - switch quarters in the Weekly targets section.</td></tr>';
   } else {
-    const target = targetByWeek[curWeek.n] || 0;
-    const actual = actualByWeek[curWeek.n] || 0;
-    const remaining = Math.max(0, target - actual);
-    const pct = target ? Math.round((actual / target) * 100) : 0;
+    const c = myBd.weeks[curWeek.n] || { assigned: 0, done: 0, left: 0 };
     let badge, badgeClass;
-    if (target === 0) { badge = 'No target'; badgeClass = 'notfound'; }
-    else if (actual >= target) { badge = 'Complete'; badgeClass = 'compliant'; }
-    else { badge = remaining + ' left'; badgeClass = 'attention'; }
-    sHtml += '<tr><td>' + fmtWeekLabel(curWeek) + '</td><td style="text-align:center;">' + target + '</td>' +
-      '<td style="text-align:center;font-weight:bold;color:var(--green);">' + actual + '</td>' +
-      '<td style="text-align:center;">' + remaining + '</td>' +
-      '<td style="text-align:center;font-weight:bold;">' + (target ? pct + '%' : '—') + '</td>' +
+    if (!c.assigned) { badge = 'No target'; badgeClass = 'notfound'; }
+    else if (!c.left) { badge = 'Complete'; badgeClass = 'compliant'; }
+    else { badge = c.left + ' left'; badgeClass = 'attention'; }
+    sHtml += '<tr><td>This week: ' + fmtWeekLabel(curWeek) + '</td><td style="text-align:center;">' + c.assigned + '</td>' +
+      '<td style="text-align:center;color:var(--green);font-weight:bold;">' + c.done + '</td>' +
+      '<td style="text-align:center;font-weight:bold;">' + c.left + '</td>' +
+      '<td style="text-align:center;font-weight:bold;font-size:13px;color:' + (!c.assigned ? 'var(--grey)' : (c.left ? 'var(--amber)' : 'var(--green)')) + ';">' +
+        (c.assigned ? Math.round((c.done / c.assigned) * 100) + '%' : '&mdash;') + '</td>' +
+      '<td style="text-align:center;">' + (actualByWeek[curWeek.n] || 0) + '</td>' +
       '<td><span class="badge ' + badgeClass + '">' + badge + '</span></td></tr>';
+    if (overdue) {
+      sHtml += '<tr><td>Overdue from past weeks</td><td></td><td></td>' +
+        '<td style="text-align:center;font-weight:bold;color:var(--red);">' + overdue + '</td><td></td><td></td>' +
+        '<td><span class="badge corrupted">' + overdue + ' overdue</span></td></tr>';
+    }
   }
-  sHtml += '</tbody>';
 
-  // ---- Overall progress across all of Q3, including pre-Q3 credit ----
-  // Without this, anyone whose work predates the dashboard shows 0%
-  // even though a chunk of their scope is already finished.
-  let totalTarget = 0;
-  Q3_WEEKS.forEach(w => { totalTarget += targetByWeek[w.n] || 0; });
-  // Counts every upload, not just datable ones - otherwise reports with
-  // an unreadable Generated line go silently uncredited.
-  const overallActual = alreadyDoneCount + myUploadsTotal;
-  const overallScope = alreadyDoneCount + totalTarget;
-  const overallPct = overallScope ? Math.min(100, Math.round((overallActual / overallScope) * 100)) : 0;
-
-  sHtml = sHtml.replace('</tbody>',
-    '<tr style="font-weight:bold;background:var(--light-grey);">' +
-    '<td>All of ' + currentQuarter + ' (incl. pre-quarter)</td>' +
-    '<td style="text-align:center;">' + overallScope + '</td>' +
-    '<td style="text-align:center;color:var(--green);">' + overallActual + '</td>' +
-    '<td style="text-align:center;">' + Math.max(0, overallScope - overallActual) + '</td>' +
-    '<td style="text-align:center;">' + overallPct + '%</td>' +
+  let qAssigned = myBd.pre, qDone = myBd.pre, qLeft = 0;
+  Q3_WEEKS.forEach(w => { const c = myBd.weeks[w.n]; if (c) { qAssigned += c.assigned; qDone += c.done; qLeft += c.left; } });
+  const qPct = qAssigned ? Math.round((qDone / qAssigned) * 100) : 0;
+  sHtml += '<tr style="font-weight:bold;background:var(--light-grey);">' +
+    '<td>All of ' + currentQuarter + '</td>' +
+    '<td style="text-align:center;">' + qAssigned + '</td>' +
+    '<td style="text-align:center;color:var(--green);">' + qDone + '</td>' +
+    '<td style="text-align:center;">' + qLeft + '</td>' +
+    '<td style="text-align:center;font-size:13px;color:' + (qLeft ? 'var(--navy)' : 'var(--green)') + ';">' + qPct + '%</td>' +
+    '<td style="text-align:center;">' + myUploadsTotal + '</td>' +
     '<td>' + (function () {
       const bits = [];
-      if (alreadyDoneCount) bits.push('<span class="badge compliant">' + alreadyDoneCount + ' pre-Q3 credited</span>');
-      if (myUploadsUndated) bits.push('<span class="badge attention" title="Uploaded and counted, but the report had no readable Generated date so it cannot be placed in a week.">' + myUploadsUndated + ' undated</span>');
+      if (alreadyDoneCount) bits.push('<span class="badge compliant">' + alreadyDoneCount + ' pre-quarter credited</span>');
+      if (myUploadsUndated) bits.push('<span class="badge attention" title="Uploaded, but the report had no readable Generated date so it cannot be placed in a week.">' + myUploadsUndated + ' undated</span>');
       return bits.join(' ');
-    })() + '</td>' +
-    '</tr></tbody>');
+    })() + '</td></tr></tbody>';
   summaryArea.innerHTML = sHtml;
 
   const capBits = [];
